@@ -1,0 +1,9 @@
+{
+  "name": "steadlane",
+  "compatibility_date": "2026-11-14",
+  "workers_dev": true,
+  "assets": {
+    "directory": "./",
+    "not_found_handling": "404"
+  }
+}
