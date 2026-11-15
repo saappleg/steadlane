@@ -24,6 +24,29 @@
       "simple": { "limit": 120, "period": 60 }
     }
   ],
+  "previews": {
+    "vars": {
+      "SUPABASE_URL": "",
+      "SUPABASE_PUBLISHABLE_KEY": ""
+    },
+    "ratelimits": [
+      {
+        "name": "ADDRESS_RATE_LIMITER",
+        "namespace_id": "84002901",
+        "simple": { "limit": 30, "period": 60 }
+      },
+      {
+        "name": "ROUTE_RATE_LIMITER",
+        "namespace_id": "84002902",
+        "simple": { "limit": 8, "period": 60 }
+      },
+      {
+        "name": "MAP_TILE_RATE_LIMITER",
+        "namespace_id": "84002903",
+        "simple": { "limit": 120, "period": 60 }
+      }
+    ]
+  },
   "assets": {
     "directory": "./",
     "binding": "ASSETS",
