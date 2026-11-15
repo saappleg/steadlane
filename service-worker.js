@@ -1,9 +1,9 @@
-const CACHE_NAME = "steadlane-shell-v4";
+const CACHE_NAME = "steadlane-shell-v5";
 const APP_SHELL = [
   "/",
   "/index.html",
   "/src/styles.css",
-  "/src/app.js?v=4",
+  "/src/app.js?v=5",
   "/src/auth.js",
   "/src/booking-api.js",
   "/src/map.js",
