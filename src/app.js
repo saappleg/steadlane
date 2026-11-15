@@ -615,6 +615,26 @@ function setupAutocomplete(kind) {
   input.addEventListener("input", () => queueAddressSearch(kind));
   input.addEventListener("keydown", (event) => {
     const state = autocomplete[kind];
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (state.suggestions.length) {
+        selectSuggestion(kind, state.activeIndex >= 0 ? state.activeIndex : 0);
+        return;
+      }
+      if (state.fullAddressSearching) return;
+
+      const query = input.value.trim();
+      if (query.length < 3) {
+        setAddressStatus(kind, "Enter at least three characters to search for an address.");
+        return;
+      }
+      if (!bookingApi) {
+        setAddressStatus(kind, "Address search is not configured yet. Try again later.");
+        return;
+      }
+      void searchFullAddress(kind, { force: true });
+      return;
+    }
     if (event.key === "ArrowDown" && state.suggestions.length) {
       event.preventDefault();
       if (list.hidden) list.hidden = false;
@@ -623,21 +643,6 @@ function setupAutocomplete(kind) {
       event.preventDefault();
       if (list.hidden) list.hidden = false;
       setActiveSuggestion(kind, state.activeIndex < 0 ? 0 : state.activeIndex - 1);
-    } else if (event.key === "Enter" && state.activeIndex >= 0 && !list.hidden) {
-      event.preventDefault();
-      selectSuggestion(kind, state.activeIndex);
-    } else if (event.key === "Enter" && !list.hidden && state.suggestions.length) {
-      event.preventDefault();
-      selectSuggestion(kind, state.activeIndex >= 0 ? state.activeIndex : 0);
-    } else if (event.key === "Enter" && state.fullAddressSearching) {
-      event.preventDefault();
-    } else if (
-      event.key === "Enter" &&
-      (state.fullAddressAvailable || state.searching) &&
-      input.value.trim().length >= 3
-    ) {
-      event.preventDefault();
-      void searchFullAddress(kind, { force: true });
     } else if (event.key === "Escape" && !list.hidden) {
       event.preventDefault();
       closeAutocomplete(kind);
