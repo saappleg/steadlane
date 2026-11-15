@@ -26,8 +26,8 @@
   ],
   "previews": {
     "vars": {
-      "SUPABASE_URL": "",
-      "SUPABASE_PUBLISHABLE_KEY": ""
+      "SUPABASE_URL": "https://cfypnovyfipeqpfktuxc.supabase.co",
+      "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_-f35M2RMXLbacJ3EPp6-fg_6LXaZUgZ"
     },
     "ratelimits": [
       {
