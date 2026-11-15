@@ -848,6 +848,7 @@ function updateQuoteActions(quote) {
       new Date(quote.expiresAt).getTime() > Date.now(),
   );
   const hasSubmittedRide = Boolean(currentBooking || currentRecurringSeries);
+  const knownSubtotalOnly = hasUnpricedStops(quote) || quote?.fare?.total === null;
   $("#signin-to-request-button").hidden = signedInPassenger;
   $("#signin-to-request-button").disabled = Boolean(authSetupError) || !authClient || !navigator.onLine;
   requestRideButton.hidden = !signedInPassenger || recurring;
@@ -855,8 +856,8 @@ function updateQuoteActions(quote) {
   requestRideButton.disabled = !signedInPassenger || !validFare || !navigator.onLine || hasSubmittedRide;
   $("#request-recurring-button").hidden = !signedInPassenger || !recurring;
   $("#request-recurring-button").disabled = !signedInPassenger || !validFare || !navigator.onLine || hasSubmittedRide;
-  hidden("#unpriced-stop-note", hasUnpricedStops(quote) || quote?.fare?.total === null);
-  hidden("#fare-known-subtotal-row", hasUnpricedStops(quote) || quote?.fare?.total === null);
+  hidden("#unpriced-stop-note", !knownSubtotalOnly);
+  hidden("#fare-known-subtotal-row", !knownSubtotalOnly);
   hidden("#fare-total-row", !Number.isFinite(quote?.fare?.total));
   hidden("#stop-warning", !hasUnpricedStops(quote));
 }
