@@ -10,6 +10,7 @@ class MockElement {
     this.style = {};
     this.classList = { add() {} };
     this.textContent = "";
+    this.listeners = new Map();
   }
 
   setAttribute(name, value) {
@@ -32,7 +33,17 @@ class MockElement {
     this.children = [...elements];
   }
 
-  addEventListener() {}
+  addEventListener(name, handler, options = {}) {
+    const listeners = this.listeners.get(name) ?? [];
+    listeners.push({ handler, once: Boolean(options.once) });
+    this.listeners.set(name, listeners);
+  }
+
+  dispatch(name) {
+    const listeners = this.listeners.get(name) ?? [];
+    this.listeners.set(name, listeners.filter((listener) => !listener.once));
+    for (const listener of listeners) listener.handler();
+  }
 
   remove() {
     this.removed = true;
@@ -43,7 +54,7 @@ class MockElement {
   }
 }
 
-test("setting a route draws its tiles and route line", () => {
+function withMapDom(callback) {
   const previousGlobals = {
     HTMLElement: globalThis.HTMLElement,
     document: globalThis.document,
@@ -62,23 +73,57 @@ test("setting a route draws its tiles and route line", () => {
   globalThis.window = { addEventListener() {}, removeEventListener() {} };
 
   try {
-    const container = new MockElement("div");
-    const map = createRouteMap(container);
-    map.setRoute({
-      type: "LineString",
-      coordinates: [[-84.512, 39.103], [-84.51, 39.08]],
-    });
-
-    const canvas = container.children[0];
-    const [tiles, routeLayer, status] = canvas.children;
-    const routePath = routeLayer.children[1];
-    assert.ok(tiles.children.length > 0);
-    assert.match(routePath.getAttribute("d"), /^M.+ L/);
-    assert.equal(status.textContent, "Driving route map");
+    callback();
   } finally {
     for (const [name, value] of Object.entries(previousGlobals)) {
       if (value === undefined) delete globalThis[name];
       else globalThis[name] = value;
     }
   }
+}
+
+const route = {
+  type: "LineString",
+  coordinates: [[-84.512, 39.103], [-84.51, 39.08]],
+};
+
+test("setting a route draws its tiles and route line without removing map states", () => {
+  withMapDom(() => {
+    const container = new MockElement("div");
+    const loading = new MockElement("p");
+    const error = new MockElement("p");
+    container.append(loading, error);
+    const map = createRouteMap(container);
+    map.setRoute(route);
+
+    const [preservedLoading, preservedError, canvas] = container.children;
+    const [tiles, routeLayer, status, attribution] = canvas.children;
+    const routePath = routeLayer.children[1];
+    assert.equal(preservedLoading, loading);
+    assert.equal(preservedError, error);
+    assert.ok(tiles.children.length > 0);
+    assert.match(routePath.getAttribute("d"), /^M.+ L/);
+    assert.equal(status.textContent, "Driving route map");
+    assert.equal(attribution.id, "map-attribution");
+    assert.equal(container.children.length, 3);
+  });
+});
+
+test("tile failures from a cleared or replaced route cannot overwrite current map status", () => {
+  withMapDom(() => {
+    const container = new MockElement("div");
+    const map = createRouteMap(container);
+    const canvas = container.children[0];
+    const [tiles, , status] = canvas.children;
+
+    map.setRoute(route);
+    const firstRouteTile = tiles.children[0];
+    map.clearRoute();
+    firstRouteTile.dispatch("error");
+    assert.equal(status.textContent, "Add a route to see the map.");
+
+    map.setRoute(route);
+    firstRouteTile.dispatch("error");
+    assert.equal(status.textContent, "Driving route map");
+  });
 });

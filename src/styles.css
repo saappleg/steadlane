@@ -1052,21 +1052,6 @@ a:focus-visible {
   box-shadow: 0 1px 3px rgb(0 0 0 / 18%);
 }
 
-.map-attribution {
-  margin: 0;
-  padding: 7px 10px;
-  color: var(--muted);
-  background: var(--surface);
-  font-size: 0.76rem;
-  line-height: 1.45;
-}
-
-.map-attribution a {
-  color: var(--brand);
-  text-decoration-thickness: 1px;
-  text-underline-offset: 2px;
-}
-
 .quote-details .estimate-total {
   margin-bottom: 12px;
 }
@@ -1372,15 +1357,6 @@ a:focus-visible {
 
   .route-map {
     background: #263831;
-  }
-
-  .map-attribution {
-    color: var(--muted);
-    background: var(--surface);
-  }
-
-  .map-attribution a {
-    color: var(--brand-text);
   }
 
   .booking-state--success {

@@ -62,6 +62,7 @@ function normalizeRoute(route) {
 function makeAttribution() {
   const attribution = document.createElement("p");
   attribution.className = "route-map__attribution";
+  attribution.id = "map-attribution";
 
   const parts = [
     { label: "Powered by Geoapify", href: "https://www.geoapify.com/" },
@@ -180,14 +181,16 @@ export function createRouteMap(element) {
   });
 
   canvas.append(tileLayer, routeLayer, status, attribution);
-  element.replaceChildren(canvas);
+  element.append(canvas);
 
   let route = null;
   let destroyed = false;
   let resizeObserver = null;
+  let renderGeneration = 0;
 
   function render() {
     if (destroyed || !route) return;
+    const generation = ++renderGeneration;
     const bounds = element.getBoundingClientRect();
     const width = Math.max(1, Math.round(bounds.width || 640));
     const height = Math.max(1, Math.round(bounds.height || 320));
@@ -235,7 +238,9 @@ export function createRouteMap(element) {
           top: `${tileY * TILE_SIZE - topWorld}px`,
         });
         image.addEventListener("error", () => {
-          if (!destroyed) status.textContent = "Some map tiles could not be loaded. The route is still shown.";
+          if (!destroyed && generation === renderGeneration && route) {
+            status.textContent = "Some map tiles could not be loaded. The route is still shown.";
+          }
         }, { once: true });
         tileLayer.append(image);
       }
@@ -295,6 +300,7 @@ export function createRouteMap(element) {
 
     clearRoute() {
       if (destroyed) return;
+      renderGeneration += 1;
       route = null;
       tileLayer.replaceChildren();
       for (const shape of [halo, path, startPoint, endPoint]) shape.removeAttribute("d");
@@ -309,9 +315,10 @@ export function createRouteMap(element) {
     destroy() {
       if (destroyed) return;
       destroyed = true;
+      renderGeneration += 1;
       resizeObserver?.disconnect();
       if (!resizeObserver) window.removeEventListener("resize", render);
-      element.replaceChildren();
+      canvas.remove();
     },
   });
 }
