@@ -1,0 +1,7 @@
+*
+!index.html
+!src/
+src/*
+!src/app.js
+!src/pricing.js
+!src/styles.css

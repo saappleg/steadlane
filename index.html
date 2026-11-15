@@ -1,7 +1,214 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#123d38"><title>Steadlane | Your ride, your way</title><style>
-:root{font-family:system-ui,-apple-system,sans-serif;color:#172c2b;background:#f2f7f5}*{box-sizing:border-box}body{margin:0}header{background:#123d38;color:white;padding:28px 20px}main{max-width:720px;margin:auto;padding:24px 16px}.card{background:white;padding:24px;border-radius:18px;box-shadow:0 8px 30px #102e2a14}h1{margin:0;font-size:2.4rem}h2{margin-top:0}label{display:block;font-weight:650;margin-top:16px}input{display:block;width:100%;padding:12px;margin-top:6px;border:1px solid #9bb4ac;border-radius:9px;font:inherit}button{background:#146e5a;color:white;border:0;border-radius:10px;padding:13px 18px;font:inherit;font-weight:700;margin-top:20px;cursor:pointer}.price{font-size:2rem;font-weight:800;margin:16px 0}.muted{color:#516a65;font-size:.92rem}.notice{padding:12px;border-radius:10px;background:#fff3d8;margin:16px 0}footer{text-align:center;padding:25px;color:#516a65}</style></head><body>
-<header><main style="padding:0"><h1>Steadlane</h1><p>Your ride. Your way. Every time.</p></main></header>
-<main><section class="card"><h2>Fare calculator preview</h2><p class="notice">Development preview only. This does not calculate a driving route, create a booking, or provide a confirmed customer fare.</p><p>Enter a known route distance and driving duration to test the fare formula. Live pickup/destination routing is coming next.</p>
-<form id="fare"><label for="miles">Route distance (miles)</label><input id="miles" type="number" min="0" step=".1" required placeholder="e.g. 8.5"><label for="minutes">Driving time (minutes)</label><input id="minutes" type="number" min="0" step="1" required placeholder="e.g. 18"><button type="submit">Calculate preview</button></form><div id="result" role="status" aria-live="polite"></div><p class="muted">Illustrative rates: $3 base + $1.80/mile + $0.30/minute, $8 minimum subtotal, plus $1 booking fee. Rates are placeholders and not yet approved for customer quotes.</p></section></main><footer>Steadlane • Beta development</footer>
-<script type="module">import { calculateFare } from './src/pricing.js';document.querySelector('#fare').addEventListener('submit',event=>{event.preventDefault();const distanceMiles=Number(document.querySelector('#miles').value),durationMinutes=Number(document.querySelector('#minutes').value);const output=document.querySelector('#result');try{const total=calculateFare({distanceMiles,durationMinutes});output.innerHTML='<p class="price">$'+total.toFixed(2)+'</p><p class="muted">Illustrative fare only — not a booking or binding quote.</p>'}catch(error){output.textContent=error.message}})</script></body></html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#123d38">
+    <meta name="description" content="Plan a private ride and preview an illustrative fare with Steadlane.">
+    <title>Steadlane | Plan your ride</title>
+    <link rel="stylesheet" href="./src/styles.css">
+    <script type="module" src="./src/app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to trip details</a>
+
+    <header class="site-header">
+      <div class="site-header__inner">
+        <a class="brand" href="./" aria-label="Steadlane home">steadlane</a>
+        <p class="header-note">Passenger beta preview</p>
+      </div>
+    </header>
+
+    <main id="main-content" class="page-shell">
+      <section class="intro" aria-labelledby="page-title">
+        <p class="eyebrow">Your trip, planned clearly</p>
+        <h1 id="page-title">Know the ride before you go.</h1>
+        <p class="intro__copy">Add your trip details to see an illustrative fare estimate. You stay in control of the plan from the first stop to the last.</p>
+      </section>
+
+      <div class="booking-layout">
+        <section class="booking-panel" aria-labelledby="trip-heading">
+          <div class="section-heading">
+            <div>
+              <p class="step-label">01 <span aria-hidden="true">/</span> Trip details</p>
+              <h2 id="trip-heading">Where are you going?</h2>
+            </div>
+            <p class="section-caption">No account needed</p>
+          </div>
+
+          <form id="ride-form" class="ride-form">
+            <div class="form-field">
+              <label for="pickup">Pickup location</label>
+              <input id="pickup" name="pickup" type="text" autocomplete="street-address" maxlength="120" placeholder="Street address, terminal, or landmark" required>
+            </div>
+
+            <div class="form-field">
+              <label for="destination">Destination</label>
+              <input id="destination" name="destination" type="text" autocomplete="off" maxlength="120" placeholder="Where should we take you?" required>
+            </div>
+
+            <div class="field-grid">
+              <div class="form-field">
+                <label for="pickup-time">Pickup date and time (local)</label>
+                <input id="pickup-time" name="pickupTime" type="datetime-local" required>
+              </div>
+
+              <div class="form-field">
+                <label for="passengers">Passengers</label>
+                <select id="passengers" name="passengers">
+                  <option value="1">1 passenger</option>
+                  <option value="2">2 passengers</option>
+                  <option value="3">3 passengers</option>
+                  <option value="4">4 passengers</option>
+                  <option value="5">5 passengers</option>
+                  <option value="6">6 passengers</option>
+                </select>
+              </div>
+            </div>
+
+            <fieldset class="route-fields">
+              <legend>Route details for this preview</legend>
+              <p class="field-help">Live route mapping is not connected yet. Enter the known driving distance and time to preview the sample fare.</p>
+              <div class="field-grid">
+                <div class="form-field">
+                  <label for="distance">Driving distance</label>
+                  <div class="input-with-unit">
+                    <input id="distance" name="distanceMiles" type="number" min="0.1" max="2500" step="0.1" inputmode="decimal" placeholder="8.5" aria-describedby="distance-help" required>
+                    <span aria-hidden="true">mi</span>
+                  </div>
+                  <p id="distance-help" class="input-hint">0.1 to 2,500 miles</p>
+                </div>
+
+                <div class="form-field">
+                  <label for="duration">Estimated drive time</label>
+                  <div class="input-with-unit">
+                    <input id="duration" name="durationMinutes" type="number" min="1" max="1440" step="1" inputmode="numeric" placeholder="18" aria-describedby="duration-help" required>
+                    <span aria-hidden="true">min</span>
+                  </div>
+                  <p id="duration-help" class="input-hint">1 to 1,440 minutes</p>
+                </div>
+              </div>
+            </fieldset>
+
+            <p id="form-error" class="form-error" role="alert" hidden></p>
+
+            <div class="form-actions">
+              <button class="button button--primary" type="submit">See fare estimate</button>
+              <button class="button button--quiet" type="reset">Clear trip</button>
+            </div>
+          </form>
+        </section>
+
+        <aside class="estimate-panel" aria-labelledby="estimate-heading">
+          <div class="section-heading section-heading--estimate">
+            <div>
+              <p class="step-label">02 <span aria-hidden="true">/</span> Fare preview</p>
+              <h2 id="estimate-heading">Your estimate</h2>
+            </div>
+          </div>
+
+          <div id="estimate-status" class="sr-only" role="status" aria-live="polite"></div>
+
+          <div id="estimate-empty" class="estimate-empty">
+            <p>Enter your trip and route details to see a sample fare breakdown here.</p>
+          </div>
+
+          <div id="estimate-details" hidden>
+            <div class="estimate-total">
+              <p class="estimate-total__label">Illustrative total</p>
+              <output id="estimate-total" class="estimate-total__amount" aria-label="Illustrative fare estimate">—</output>
+              <p class="estimate-total__note">For the route details you entered</p>
+            </div>
+
+            <dl class="fare-breakdown" aria-label="Fare breakdown">
+              <div class="fare-row">
+                <dt>Base fare</dt>
+                <dd id="fare-base">—</dd>
+              </div>
+              <div class="fare-row">
+                <dt>Distance</dt>
+                <dd id="fare-distance">—</dd>
+              </div>
+              <div class="fare-row">
+                <dt>Drive time</dt>
+                <dd id="fare-duration">—</dd>
+              </div>
+              <div id="minimum-adjustment-row" class="fare-row" hidden>
+                <dt>Minimum fare adjustment</dt>
+                <dd id="fare-minimum-adjustment">—</dd>
+              </div>
+              <div class="fare-row">
+                <dt>Booking fee</dt>
+                <dd id="fare-booking-fee">—</dd>
+              </div>
+              <div class="fare-row fare-row--total">
+                <dt>Estimated total</dt>
+                <dd id="fare-total">—</dd>
+              </div>
+            </dl>
+
+            <div class="estimate-notice" role="note">
+              <p><strong>Preview only.</strong> Current sample rates are <span id="rate-summary"></span> and have not been approved for customer quotes. Route distance and time are entered manually. This is not a confirmed fare or booking.</p>
+            </div>
+
+            <button id="review-button" class="button button--primary button--full" type="button">Review trip</button>
+          </div>
+
+          <section id="trip-review" class="trip-review" aria-labelledby="review-heading" hidden>
+            <div class="section-heading section-heading--review">
+              <div>
+                <p class="step-label">03 <span aria-hidden="true">/</span> Review</p>
+                <h3 id="review-heading" tabindex="-1">Check your trip</h3>
+              </div>
+            </div>
+
+            <dl class="trip-summary">
+              <div class="trip-summary__row">
+                <dt>Pickup</dt>
+                <dd id="review-pickup">—</dd>
+              </div>
+              <div class="trip-summary__row">
+                <dt>Destination</dt>
+                <dd id="review-destination">—</dd>
+              </div>
+              <div class="trip-summary__row">
+                <dt>Pickup time</dt>
+                <dd id="review-time">—</dd>
+              </div>
+              <div class="trip-summary__row">
+                <dt>Passengers</dt>
+                <dd id="review-passengers">—</dd>
+              </div>
+              <div class="trip-summary__row">
+                <dt>Entered route</dt>
+                <dd id="review-route">—</dd>
+              </div>
+              <div class="trip-summary__row trip-summary__row--total">
+                <dt>Illustrative estimate</dt>
+                <dd id="review-total">—</dd>
+              </div>
+            </dl>
+
+            <div class="estimate-notice" role="note">
+              <p><strong>Booking requests are not enabled.</strong> This preview does not send or save trip details.</p>
+            </div>
+
+            <div class="review-actions">
+              <button id="edit-trip-button" class="button button--quiet" type="button">Change trip</button>
+              <button class="button button--disabled" type="button" disabled>Request ride unavailable</button>
+            </div>
+          </section>
+        </aside>
+      </div>
+
+      <p class="privacy-note">Your trip details stay in this browser preview. Nothing is sent or saved.</p>
+    </main>
+
+    <footer class="site-footer">
+      <div class="site-footer__inner">
+        <p>Steadlane</p>
+        <p>Beta development preview</p>
+      </div>
+    </footer>
+  </body>
+</html>
