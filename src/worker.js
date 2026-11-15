@@ -469,7 +469,10 @@ async function getPlaceDetails(placeId, apiKey) {
   url.searchParams.set("id", placeId);
   url.searchParams.set("apiKey", apiKey);
   const result = await fetchGeoapifyJson(url);
-  const properties = Array.isArray(result?.features) ? result.features[0]?.properties : null;
+  const detailsFeature = Array.isArray(result?.features)
+    ? result.features.find((feature) => feature?.properties?.feature_type === "details")
+    : null;
+  const properties = detailsFeature?.properties;
   const latitude = Number(properties?.lat);
   const longitude = Number(properties?.lon);
   const label = typeof properties?.formatted === "string" ? properties.formatted.trim() : "";
@@ -478,7 +481,9 @@ async function getPlaceDetails(placeId, apiKey) {
     !validCoordinate(latitude, longitude) ||
     !label ||
     typeof returnedPlaceId !== "string" ||
-    returnedPlaceId !== placeId ||
+    returnedPlaceId.length < 8 ||
+    returnedPlaceId.length > 512 ||
+    /[\s\u0000-\u001f]/.test(returnedPlaceId) ||
     label.length > MAX_LABEL_LENGTH
   ) {
     fail(400, "invalid_place", "Choose an address returned by the address suggestions.");
