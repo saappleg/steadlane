@@ -4,211 +4,652 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#123d38">
-    <meta name="description" content="Plan a private ride and preview an illustrative fare with Steadlane.">
-    <title>Steadlane | Plan your ride</title>
+    <meta name="description" content="Plan and request a private ride with a clear route and fare.">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Steadlane">
+    <meta name="mobile-web-app-capable" content="yes">
+    <title>Steadlane | Plan a ride</title>
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="icon" type="image/svg+xml" href="./assets/steadlane-icon.svg">
+    <link rel="apple-touch-icon" href="./assets/steadlane-icon.svg">
     <link rel="stylesheet" href="./src/styles.css">
     <script type="module" src="./src/app.js"></script>
   </head>
   <body>
-    <a class="skip-link" href="#main-content">Skip to trip details</a>
+    <a class="skip-link" href="#main-content">Skip to main content</a>
 
-    <header class="site-header">
-      <div class="site-header__inner">
-        <a class="brand" href="./" aria-label="Steadlane home">steadlane</a>
-        <p class="header-note">Passenger beta preview</p>
+    <div id="app-shell" class="app-shell" data-auth-state="signed-out">
+      <header class="site-header">
+        <div class="site-header__inner">
+          <a class="brand" href="./" aria-label="Steadlane home">steadlane</a>
+          <nav id="site-nav" class="site-nav" aria-label="Account navigation">
+            <button
+              id="nav-booking"
+              class="nav-button is-active"
+              type="button"
+              data-view-target="passenger"
+              data-passenger-panel-target="booking"
+              aria-pressed="true"
+            >Book a ride</button>
+            <button
+              id="nav-history"
+              class="nav-button"
+              type="button"
+              data-view-target="passenger"
+              data-passenger-panel-target="history"
+              aria-pressed="false"
+              hidden
+            >Ride history</button>
+            <button
+              id="nav-driver"
+              class="nav-button"
+              type="button"
+              data-view-target="driver"
+              aria-pressed="false"
+              hidden
+            >Driver requests</button>
+            <span id="account-label" class="account-label" hidden></span>
+            <button id="nav-signin" class="nav-button nav-button--signin" type="button" data-action="signin">Sign in</button>
+            <button id="sign-out-button" class="nav-button nav-button--signout" type="button" data-action="signout" hidden>Sign out</button>
+          </nav>
+          <p id="header-beta-note" class="header-note">Passenger and driver beta</p>
+        </div>
+      </header>
+
+      <div id="offline-notice" class="offline-notice" role="status" aria-live="polite" hidden>
+        <div class="page-shell offline-notice__inner">
+          <p>You’re offline. Saved pages may open, but routes, fare quotes, and ride requests need a connection.</p>
+        </div>
       </div>
-    </header>
 
-    <main id="main-content" class="page-shell">
-      <section class="intro" aria-labelledby="page-title">
-        <p class="eyebrow">Your trip, planned clearly</p>
-        <h1 id="page-title">Know the ride before you go.</h1>
-        <p class="intro__copy">Add your trip details to see an illustrative fare estimate. You stay in control of the plan from the first stop to the last.</p>
-      </section>
-
-      <div class="booking-layout">
-        <section class="booking-panel" aria-labelledby="trip-heading">
-          <div class="section-heading">
-            <div>
-              <p class="step-label">01 <span aria-hidden="true">/</span> Trip details</p>
-              <h2 id="trip-heading">Where are you going?</h2>
-            </div>
-            <p class="section-caption">No account needed</p>
+      <main id="main-content" class="page-shell">
+        <section id="auth-view" class="app-view auth-view" data-view="auth" aria-labelledby="auth-heading" hidden>
+          <div class="auth-intro">
+            <p class="eyebrow">Steadlane private rides</p>
+            <h1 id="auth-heading">Know the plan before the ride.</h1>
+            <p class="intro__copy">Sign in when you’re ready to request a ride. You can plan and review a fare first.</p>
+            <button id="auth-back-to-planner" class="button button--quiet" type="button">Back to trip plan</button>
           </div>
 
-          <form id="ride-form" class="ride-form">
-            <div class="form-field">
-              <label for="pickup">Pickup location</label>
-              <input id="pickup" name="pickup" type="text" autocomplete="street-address" maxlength="120" placeholder="Street address, terminal, or landmark" required>
-            </div>
-
-            <div class="form-field">
-              <label for="destination">Destination</label>
-              <input id="destination" name="destination" type="text" autocomplete="off" maxlength="120" placeholder="Where should we take you?" required>
-            </div>
-
-            <div class="field-grid">
-              <div class="form-field">
-                <label for="pickup-time">Pickup date and time (local)</label>
-                <input id="pickup-time" name="pickupTime" type="datetime-local" required>
-              </div>
-
-              <div class="form-field">
-                <label for="passengers">Passengers</label>
-                <select id="passengers" name="passengers">
-                  <option value="1">1 passenger</option>
-                  <option value="2">2 passengers</option>
-                  <option value="3">3 passengers</option>
-                  <option value="4">4 passengers</option>
-                  <option value="5">5 passengers</option>
-                  <option value="6">6 passengers</option>
-                </select>
+          <section class="account-panel" aria-labelledby="account-heading">
+            <div class="section-heading">
+              <div>
+                <p class="step-label">Passenger account</p>
+                <h2 id="account-heading">Welcome to Steadlane</h2>
               </div>
             </div>
 
-            <fieldset class="route-fields">
-              <legend>Route details for this preview</legend>
-              <p class="field-help">Live route mapping is not connected yet. Enter the known driving distance and time to preview the sample fare.</p>
-              <div class="field-grid">
+            <div class="auth-tabs" role="tablist" aria-label="Passenger account options">
+              <button
+                id="login-tab"
+                class="auth-tab is-active"
+                type="button"
+                role="tab"
+                aria-controls="login-panel"
+                aria-selected="true"
+                data-auth-mode="login"
+              >Sign in</button>
+              <button
+                id="signup-tab"
+                class="auth-tab"
+                type="button"
+                role="tab"
+                aria-controls="signup-panel"
+                aria-selected="false"
+                data-auth-mode="signup"
+              >Create account</button>
+            </div>
+
+            <section
+              id="login-panel"
+              class="auth-panel"
+              role="tabpanel"
+              aria-labelledby="login-tab"
+              data-auth-panel="login"
+            >
+              <form id="login-form" class="stacked-form" data-auth-form="login">
                 <div class="form-field">
-                  <label for="distance">Driving distance</label>
-                  <div class="input-with-unit">
-                    <input id="distance" name="distanceMiles" type="number" min="0.1" max="2500" step="0.1" inputmode="decimal" placeholder="8.5" aria-describedby="distance-help" required>
-                    <span aria-hidden="true">mi</span>
-                  </div>
-                  <p id="distance-help" class="input-hint">0.1 to 2,500 miles</p>
+                  <label for="login-email">Email address</label>
+                  <input id="login-email" name="email" type="email" autocomplete="username" maxlength="254" required>
                 </div>
-
                 <div class="form-field">
-                  <label for="duration">Estimated drive time</label>
-                  <div class="input-with-unit">
-                    <input id="duration" name="durationMinutes" type="number" min="1" max="1440" step="1" inputmode="numeric" placeholder="18" aria-describedby="duration-help" required>
-                    <span aria-hidden="true">min</span>
-                  </div>
-                  <p id="duration-help" class="input-hint">1 to 1,440 minutes</p>
+                  <label for="login-password">Password</label>
+                  <input id="login-password" name="password" type="password" autocomplete="current-password" required>
                 </div>
+                <p id="login-error" class="form-error" role="alert" hidden></p>
+                <button class="button button--primary button--full" type="submit">Sign in</button>
+              </form>
+              <button
+                id="forgot-password-button"
+                class="auth-action-link"
+                type="button"
+                aria-describedby="forgot-password-help"
+              >Forgot password?</button>
+              <p id="forgot-password-help" class="input-hint">Enter your sign-in email above. We’ll send a reset link if an account matches.</p>
+              <div id="password-reset-feedback" class="recovery-feedback" aria-live="off">
+                <p id="password-reset-loading" class="form-status recovery-loading" role="status" aria-live="polite" hidden>Sending a password reset link…</p>
+                <p id="password-reset-error" class="form-error" role="alert" hidden></p>
+                <p id="password-reset-success" class="recovery-success" role="status" aria-live="polite" hidden>If an account matches that email, we’ll send a reset link. Check your inbox.</p>
               </div>
-            </fieldset>
+              <p id="login-status" class="form-status" role="status" aria-live="polite"></p>
 
-            <p id="form-error" class="form-error" role="alert" hidden></p>
+              <section id="password-recovery-panel" class="recovery-panel" aria-labelledby="password-recovery-heading" hidden>
+                <div class="recovery-panel__heading">
+                  <p class="step-label">Password reset</p>
+                  <h3 id="password-recovery-heading" tabindex="-1">Choose a new password</h3>
+                  <p class="input-hint">Use at least 8 characters. Enter the same password in both fields.</p>
+                </div>
+                <form id="password-recovery-form" class="stacked-form" aria-describedby="password-recovery-help">
+                  <p id="password-recovery-help" class="sr-only">Your new password must contain at least 8 characters. The confirmation must match.</p>
+                  <div class="form-field">
+                    <label for="recovery-password">New password</label>
+                    <input id="recovery-password" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="256" required>
+                  </div>
+                  <div class="form-field">
+                    <label for="recovery-password-confirm">Confirm new password</label>
+                    <input id="recovery-password-confirm" name="passwordConfirm" type="password" autocomplete="new-password" minlength="8" maxlength="256" required>
+                  </div>
+                  <p id="password-recovery-loading" class="form-status recovery-loading" role="status" aria-live="polite" hidden>Updating your password…</p>
+                  <p id="password-recovery-error" class="form-error" role="alert" hidden></p>
+                  <p id="password-recovery-success" class="recovery-success" role="status" aria-live="polite" hidden>Password updated. Sign in with your new password.</p>
+                  <button id="password-recovery-submit" class="button button--primary button--full" type="submit">Update password</button>
+                  <button id="password-recovery-back" class="button button--quiet" type="button">Back to sign in</button>
+                </form>
+              </section>
+            </section>
 
-            <div class="form-actions">
-              <button class="button button--primary" type="submit">See fare estimate</button>
-              <button class="button button--quiet" type="reset">Clear trip</button>
-            </div>
-          </form>
+            <section
+              id="signup-panel"
+              class="auth-panel"
+              role="tabpanel"
+              aria-labelledby="signup-tab"
+              data-auth-panel="signup"
+              hidden
+            >
+              <form id="signup-form" class="stacked-form" data-auth-form="signup">
+                <div class="form-field">
+                  <label for="signup-name">Full name</label>
+                  <input id="signup-name" name="fullName" type="text" autocomplete="name" maxlength="120" required>
+                </div>
+                <div class="form-field">
+                  <label for="signup-email">Email address</label>
+                  <input id="signup-email" name="email" type="email" autocomplete="email" maxlength="254" required>
+                </div>
+                <div class="form-field">
+                  <label for="signup-phone">Mobile number</label>
+                  <input id="signup-phone" name="phone" type="tel" autocomplete="tel" inputmode="tel" maxlength="25" aria-describedby="signup-phone-help" required>
+                  <p id="signup-phone-help" class="input-hint">Use 7 to 25 characters with digits and common phone punctuation.</p>
+                </div>
+                <div class="form-field">
+                  <label for="signup-password">Password</label>
+                  <input id="signup-password" name="password" type="password" autocomplete="new-password" minlength="8" required>
+                  <p class="input-hint">Use at least 8 characters.</p>
+                </div>
+                <p id="signup-error" class="form-error" role="alert" hidden></p>
+                <button class="button button--primary button--full" type="submit">Create passenger account</button>
+              </form>
+              <p id="signup-status" class="form-status" role="status" aria-live="polite"></p>
+            </section>
+
+            <p id="auth-message" class="auth-message" role="status" aria-live="polite"></p>
+            <p class="driver-access-note">Driver access is invite-only. Sign in with your approved account; driver registration is handled by Steadlane.</p>
+          </section>
         </section>
 
-        <aside class="estimate-panel" aria-labelledby="estimate-heading">
-          <div class="section-heading section-heading--estimate">
+        <section id="passenger-view" class="app-view" data-view="passenger" aria-labelledby="passenger-heading">
+          <div class="view-intro">
             <div>
-              <p class="step-label">02 <span aria-hidden="true">/</span> Fare preview</p>
-              <h2 id="estimate-heading">Your estimate</h2>
+              <p class="eyebrow">Passenger planner</p>
+              <h1 id="passenger-heading">Plan a ride.</h1>
+              <p class="intro__copy">Choose your route and pickup time to see a fare estimate. Sign in only when you’re ready to request.</p>
             </div>
           </div>
 
-          <div id="estimate-status" class="sr-only" role="status" aria-live="polite"></div>
+          <nav class="local-nav" aria-label="Passenger pages" hidden>
+            <button
+              class="local-nav__button is-active"
+              type="button"
+              data-passenger-panel-target="booking"
+              aria-pressed="true"
+            >Book a ride</button>
+            <button
+              class="local-nav__button"
+              type="button"
+              data-passenger-panel-target="history"
+              aria-pressed="false"
+            >Ride history</button>
+          </nav>
 
-          <div id="estimate-empty" class="estimate-empty">
-            <p>Enter your trip and route details to see a sample fare breakdown here.</p>
-          </div>
+          <section id="passenger-booking-panel" class="passenger-panel" data-passenger-panel="booking" aria-labelledby="booking-heading">
+            <div class="booking-layout">
+              <section class="booking-panel" aria-labelledby="booking-heading">
+                <div class="section-heading">
+                  <div>
+                    <p class="step-label">Trip details</p>
+                    <h2 id="booking-heading">Where and when?</h2>
+                  </div>
+                </div>
 
-          <div id="estimate-details" hidden>
-            <div class="estimate-total">
-              <p class="estimate-total__label">Illustrative total</p>
-              <output id="estimate-total" class="estimate-total__amount" aria-label="Illustrative fare estimate">—</output>
-              <p class="estimate-total__note">For the route details you entered</p>
-            </div>
+                <form id="ride-form" class="ride-form">
+                  <div class="form-field location-field">
+                    <label for="pickup">Pickup location</label>
+                    <input
+                      id="pickup"
+                      name="pickup"
+                      type="search"
+                      role="combobox"
+                      aria-autocomplete="list"
+                      aria-expanded="false"
+                      aria-controls="pickup-options"
+                      aria-describedby="pickup-help"
+                      autocomplete="street-address"
+                      maxlength="160"
+                      placeholder="Street address, terminal, or landmark"
+                      required
+                    >
+                    <p id="pickup-help" class="input-hint">Choose a matching address from the suggestions.</p>
+                    <ul id="pickup-options" class="suggestion-list" role="listbox" aria-label="Pickup suggestions" hidden></ul>
+                  </div>
 
-            <dl class="fare-breakdown" aria-label="Fare breakdown">
-              <div class="fare-row">
-                <dt>Base fare</dt>
-                <dd id="fare-base">—</dd>
-              </div>
-              <div class="fare-row">
-                <dt>Distance</dt>
-                <dd id="fare-distance">—</dd>
-              </div>
-              <div class="fare-row">
-                <dt>Drive time</dt>
-                <dd id="fare-duration">—</dd>
-              </div>
-              <div id="minimum-adjustment-row" class="fare-row" hidden>
-                <dt>Minimum fare adjustment</dt>
-                <dd id="fare-minimum-adjustment">—</dd>
-              </div>
-              <div class="fare-row">
-                <dt>Booking fee</dt>
-                <dd id="fare-booking-fee">—</dd>
-              </div>
-              <div class="fare-row fare-row--total">
-                <dt>Estimated total</dt>
-                <dd id="fare-total">—</dd>
-              </div>
-            </dl>
+                  <div class="form-field location-field">
+                    <label for="destination">Destination</label>
+                    <input
+                      id="destination"
+                      name="destination"
+                      type="search"
+                      role="combobox"
+                      aria-autocomplete="list"
+                      aria-expanded="false"
+                      aria-controls="destination-options"
+                      aria-describedby="destination-help"
+                      autocomplete="off"
+                      maxlength="160"
+                      placeholder="Where should we take you?"
+                      required
+                    >
+                    <p id="destination-help" class="input-hint">Choose a matching address from the suggestions.</p>
+                    <ul id="destination-options" class="suggestion-list" role="listbox" aria-label="Destination suggestions" hidden></ul>
+                  </div>
 
-            <div class="estimate-notice" role="note">
-              <p><strong>Preview only.</strong> Current sample rates are <span id="rate-summary"></span> and have not been approved for customer quotes. Route distance and time are entered manually. This is not a confirmed fare or booking.</p>
-            </div>
+                  <fieldset class="stops-fieldset">
+                    <legend>Stops along the way <span class="optional-label">Optional · up to 3</span></legend>
+                    <div class="form-field location-field stop-field" id="stop-field-1" hidden>
+                      <label for="stop-1">Stop 1</label>
+                      <div class="location-input-row">
+                        <input id="stop-1" name="stop1" type="search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="stop-1-options" aria-describedby="stop-1-help" autocomplete="off" maxlength="160" placeholder="Add an address or place">
+                        <button class="button button--quiet stop-remove" type="button" data-remove-stop="1" aria-label="Remove stop 1">Remove</button>
+                      </div>
+                      <p id="stop-1-help" class="input-hint">Choose a matching address from the suggestions.</p>
+                      <ul id="stop-1-options" class="suggestion-list" role="listbox" aria-label="Stop 1 suggestions" hidden></ul>
+                    </div>
+                    <div class="form-field location-field stop-field" id="stop-field-2" hidden>
+                      <label for="stop-2">Stop 2</label>
+                      <div class="location-input-row">
+                        <input id="stop-2" name="stop2" type="search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="stop-2-options" aria-describedby="stop-2-help" autocomplete="off" maxlength="160" placeholder="Add an address or place">
+                        <button class="button button--quiet stop-remove" type="button" data-remove-stop="2" aria-label="Remove stop 2">Remove</button>
+                      </div>
+                      <p id="stop-2-help" class="input-hint">Choose a matching address from the suggestions.</p>
+                      <ul id="stop-2-options" class="suggestion-list" role="listbox" aria-label="Stop 2 suggestions" hidden></ul>
+                    </div>
+                    <div class="form-field location-field stop-field" id="stop-field-3" hidden>
+                      <label for="stop-3">Stop 3</label>
+                      <div class="location-input-row">
+                        <input id="stop-3" name="stop3" type="search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="stop-3-options" aria-describedby="stop-3-help" autocomplete="off" maxlength="160" placeholder="Add an address or place">
+                        <button class="button button--quiet stop-remove" type="button" data-remove-stop="3" aria-label="Remove stop 3">Remove</button>
+                      </div>
+                      <p id="stop-3-help" class="input-hint">Choose a matching address from the suggestions.</p>
+                      <ul id="stop-3-options" class="suggestion-list" role="listbox" aria-label="Stop 3 suggestions" hidden></ul>
+                    </div>
+                    <button id="add-stop-button" class="button button--quiet" type="button">Add a stop</button>
+                    <p id="stop-warning" class="state-message state-message--warning" hidden>Stop charges are not included in this estimate. The amount shown is a subtotal, and ride requests are unavailable until the stop charge is priced.</p>
+                  </fieldset>
 
-            <button id="review-button" class="button button--primary button--full" type="button">Review trip</button>
-          </div>
+                  <div class="field-grid">
+                    <div class="form-field" id="pickup-time-field">
+                      <label for="pickup-time">Pickup date and time <span class="optional-label">Eastern Time</span></label>
+                      <input id="pickup-time" name="pickupTime" type="datetime-local" autocomplete="off" required>
+                    </div>
+                    <div class="form-field">
+                      <label for="passengers">Passengers</label>
+                      <select id="passengers" name="passengers" required>
+                        <option value="1">1 passenger</option>
+                        <option value="2">2 passengers</option>
+                        <option value="3">3 passengers</option>
+                        <option value="4">4 passengers</option>
+                        <option value="5">5 passengers</option>
+                        <option value="6">6 passengers</option>
+                      </select>
+                    </div>
+                  </div>
 
-          <section id="trip-review" class="trip-review" aria-labelledby="review-heading" hidden>
-            <div class="section-heading section-heading--review">
-              <div>
-                <p class="step-label">03 <span aria-hidden="true">/</span> Review</p>
-                <h3 id="review-heading" tabindex="-1">Check your trip</h3>
-              </div>
-            </div>
+                  <fieldset class="recurrence-fieldset">
+                    <legend>Repeat weekly</legend>
+                    <div class="toggle-row">
+                      <input id="repeat-weekly-toggle" name="repeatWeekly" type="checkbox" aria-controls="recurrence-options">
+                      <label for="repeat-weekly-toggle">Request this ride on selected weekdays</label>
+                    </div>
+                    <div id="recurrence-options" class="recurrence-options" hidden>
+                      <fieldset class="weekday-fieldset">
+                        <legend>Weekdays</legend>
+                        <div class="weekday-options">
+                          <label><input type="checkbox" name="weekdays" value="1"><span>Mon</span></label>
+                          <label><input type="checkbox" name="weekdays" value="2"><span>Tue</span></label>
+                          <label><input type="checkbox" name="weekdays" value="3"><span>Wed</span></label>
+                          <label><input type="checkbox" name="weekdays" value="4"><span>Thu</span></label>
+                          <label><input type="checkbox" name="weekdays" value="5"><span>Fri</span></label>
+                          <label><input type="checkbox" name="weekdays" value="6"><span>Sat</span></label>
+                          <label><input type="checkbox" name="weekdays" value="7"><span>Sun</span></label>
+                        </div>
+                      </fieldset>
+                      <div class="field-grid">
+                        <div class="form-field">
+                          <label for="recurrence-start">First date</label>
+                          <input id="recurrence-start" name="recurrenceStart" type="date" autocomplete="off">
+                        </div>
+                        <div class="form-field">
+                          <label for="recurrence-end">Last date</label>
+                          <input id="recurrence-end" name="recurrenceEnd" type="date" autocomplete="off">
+                        </div>
+                        <div class="form-field">
+                          <label for="recurrence-time">Pickup time <span class="optional-label">Eastern Time</span></label>
+                          <input id="recurrence-time" name="recurrenceTime" type="time" autocomplete="off">
+                        </div>
+                      </div>
+                      <p class="input-hint">Each date is sent as a separate ride request for the selected weekdays, up to 90 days. Drivers accept each request individually. Times use America/New_York.</p>
+                    </div>
+                  </fieldset>
 
-            <dl class="trip-summary">
-              <div class="trip-summary__row">
-                <dt>Pickup</dt>
-                <dd id="review-pickup">—</dd>
-              </div>
-              <div class="trip-summary__row">
-                <dt>Destination</dt>
-                <dd id="review-destination">—</dd>
-              </div>
-              <div class="trip-summary__row">
-                <dt>Pickup time</dt>
-                <dd id="review-time">—</dd>
-              </div>
-              <div class="trip-summary__row">
-                <dt>Passengers</dt>
-                <dd id="review-passengers">—</dd>
-              </div>
-              <div class="trip-summary__row">
-                <dt>Entered route</dt>
-                <dd id="review-route">—</dd>
-              </div>
-              <div class="trip-summary__row trip-summary__row--total">
-                <dt>Illustrative estimate</dt>
-                <dd id="review-total">—</dd>
-              </div>
-            </dl>
+                  <div id="route-status" class="route-status" role="status" aria-live="polite"></div>
+                  <p id="route-loading" class="state-message state-message--loading" role="status" hidden>Finding a route…</p>
+                  <p id="route-empty" class="state-message" hidden>Choose a pickup and destination to find a route.</p>
+                  <p id="route-error" class="state-message state-message--error" role="alert" hidden>We couldn’t find a route. Check both addresses and try again.</p>
 
-            <div class="estimate-notice" role="note">
-              <p><strong>Booking requests are not enabled.</strong> This preview does not send or save trip details.</p>
-            </div>
+                  <div id="route-result" class="route-result" hidden>
+                    <dl class="route-summary" aria-label="Route details">
+                      <div>
+                        <dt>Driving distance</dt>
+                        <dd id="route-distance">—</dd>
+                      </div>
+                      <div>
+                        <dt>Estimated drive time</dt>
+                        <dd id="route-duration">—</dd>
+                      </div>
+                    </dl>
+                    <div class="map-shell">
+                      <div id="route-map" class="route-map" role="region" aria-label="Map showing the selected route" aria-describedby="map-attribution">
+                        <p id="map-loading" class="map-state" role="status" hidden>Loading map…</p>
+                        <p id="map-error" class="map-state map-state--error" role="status" hidden>Map unavailable. The route details are still shown above.</p>
+                      </div>
+                      <p id="map-attribution" class="map-attribution">
+                        Routing by <a href="https://www.geoapify.com/" target="_blank" rel="noreferrer">Geoapify</a>
+                        · Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap contributors</a>
+                        · Tiles © <a href="https://openmaptiles.org/" target="_blank" rel="noreferrer">OpenMapTiles</a>
+                      </p>
+                    </div>
+                  </div>
 
-            <div class="review-actions">
-              <button id="edit-trip-button" class="button button--quiet" type="button">Change trip</button>
-              <button class="button button--disabled" type="button" disabled>Request ride unavailable</button>
+                  <p id="ride-form-error" class="form-error" role="alert" hidden></p>
+                  <div class="form-actions">
+                    <button class="button button--primary" type="submit">Get route and fare</button>
+                    <button class="button button--quiet" type="reset">Clear trip</button>
+                  </div>
+                </form>
+              </section>
+
+              <aside class="estimate-panel" aria-labelledby="quote-heading">
+                <div class="section-heading section-heading--estimate">
+                  <div>
+                    <p class="step-label">Route fare</p>
+                    <h2 id="quote-heading">Your estimate</h2>
+                  </div>
+                </div>
+
+                <section class="pricing-card" aria-labelledby="pricing-heading">
+                  <h3 id="pricing-heading">Sample rate schedule</h3>
+                  <p class="pricing-caption">Provisional rates used for planning. Final rates may change before launch.</p>
+                  <p id="pricing-loading" class="state-message state-message--loading" role="status" hidden>Loading sample rates…</p>
+                  <p id="pricing-error" class="state-message state-message--error" role="alert" hidden>Sample rates are unavailable right now.</p>
+                  <button id="pricing-retry-button" class="button button--quiet" type="button" hidden>Retry loading rates</button>
+                  <dl id="pricing-list" class="fare-breakdown pricing-list" hidden>
+                    <div class="fare-row"><dt>Base fare</dt><dd id="rate-base">—</dd></div>
+                    <div class="fare-row"><dt>Per mile</dt><dd id="rate-mile">—</dd></div>
+                    <div class="fare-row"><dt>Per minute</dt><dd id="rate-minute">—</dd></div>
+                    <div class="fare-row"><dt>Minimum fare</dt><dd id="rate-minimum">—</dd></div>
+                    <div class="fare-row"><dt>Booking fee</dt><dd id="rate-booking">—</dd></div>
+                    <div class="fare-row" id="rate-stop-row" hidden><dt>Per stop</dt><dd id="rate-stop">—</dd></div>
+                  </dl>
+                </section>
+
+                <div id="quote-empty" class="estimate-empty">
+                    <p>Choose addresses and a pickup time to get a route and fare estimate.</p>
+                </div>
+                <p id="quote-loading" class="state-message state-message--loading" role="status" hidden>Calculating your fare…</p>
+                <p id="quote-error" class="state-message state-message--error" role="alert" hidden>We couldn’t calculate a fare. Please try again.</p>
+                <p id="quote-expired" class="state-message state-message--warning" role="alert" hidden>This fare estimate has expired. Request a new estimate before continuing.</p>
+
+                <div id="quote-details" class="quote-details" hidden>
+                  <dl class="trip-review" aria-label="Trip review">
+                    <div class="fare-row"><dt>Pickup</dt><dd id="review-pickup">—</dd></div>
+                    <div class="fare-row" id="review-stops-row" hidden><dt>Stops</dt><dd id="review-stops">—</dd></div>
+                    <div class="fare-row"><dt>Destination</dt><dd id="review-destination">—</dd></div>
+                    <div class="fare-row"><dt>Schedule</dt><dd id="review-schedule">—</dd></div>
+                    <div class="fare-row"><dt>Passengers</dt><dd id="review-passengers">—</dd></div>
+                  </dl>
+                  <div class="estimate-total">
+                    <p id="estimate-total-label" class="estimate-total__label">Estimated fare</p>
+                    <output id="estimate-total" class="estimate-total__amount" aria-label="Estimated fare">—</output>
+                    <p id="quote-validity" class="estimate-total__note"></p>
+                  </div>
+
+                  <dl class="fare-breakdown" aria-label="Fare breakdown">
+                    <div class="fare-row">
+                      <dt>Base fare</dt>
+                      <dd id="fare-base">—</dd>
+                    </div>
+                    <div class="fare-row">
+                      <dt>Distance</dt>
+                      <dd id="fare-distance">—</dd>
+                    </div>
+                    <div class="fare-row">
+                      <dt>Drive time</dt>
+                      <dd id="fare-duration">—</dd>
+                    </div>
+                    <div id="minimum-adjustment-row" class="fare-row" hidden>
+                      <dt>Minimum fare adjustment</dt>
+                      <dd id="fare-minimum-adjustment">—</dd>
+                    </div>
+                    <div class="fare-row">
+                      <dt>Booking fee</dt>
+                      <dd id="fare-booking-fee">—</dd>
+                    </div>
+                    <div id="fare-stop-row" class="fare-row" hidden>
+                      <dt>Stop charge</dt>
+                      <dd id="fare-stop-charge">—</dd>
+                    </div>
+                    <div id="fare-known-subtotal-row" class="fare-row" hidden>
+                      <dt>Known subtotal</dt>
+                      <dd id="fare-known-subtotal">—</dd>
+                    </div>
+                    <div id="fare-total-row" class="fare-row fare-row--total">
+                      <dt>Estimated total</dt>
+                      <dd id="fare-total">—</dd>
+                    </div>
+                  </dl>
+
+                  <p class="quote-note">Fare uses the route and rates returned for this trip. The ride is not confirmed until a driver accepts.</p>
+                  <p id="unpriced-stop-note" class="state-message state-message--warning" hidden>Stop pricing is incomplete. This subtotal is for planning only, and this route cannot be requested yet.</p>
+                  <button id="signin-to-request-button" class="button button--primary button--full" type="button" data-action="signin">Sign in to request this ride</button>
+                  <button id="request-ride-button" class="button button--primary button--full" type="button" data-action="request-ride" disabled hidden>Request this ride</button>
+                  <button id="request-recurring-button" class="button button--primary button--full" type="button" data-action="request-recurring" disabled hidden>Request weekly rides</button>
+                  <p id="request-ride-note" class="input-hint">Requesting a ride does not charge a payment method. Each weekly date is a separate request.</p>
+                </div>
+
+                <div id="booking-status" class="booking-status" aria-live="polite" tabindex="-1" hidden>
+                  <section id="recurring-booking-state" class="booking-state booking-state--success" aria-labelledby="recurring-booking-heading" hidden>
+                    <p class="step-label">Weekly requests sent</p>
+                    <h3 id="recurring-booking-heading">Your weekly ride requests are ready</h3>
+                    <p id="recurring-booking-message"></p>
+                  </section>
+                  <section id="booking-requested" class="booking-state" aria-labelledby="booking-requested-heading" hidden>
+                    <p class="step-label">Request sent</p>
+                    <h3 id="booking-requested-heading">Waiting for a driver</h3>
+                    <p>Your request is waiting for a driver to accept.</p>
+                  </section>
+                  <section id="booking-accepted" class="booking-state booking-state--success" aria-labelledby="booking-accepted-heading" hidden>
+                    <p class="step-label">Ride confirmed</p>
+                    <h3 id="booking-accepted-heading">A driver accepted your ride</h3>
+                    <p id="booking-driver-details"></p>
+                  </section>
+                  <section id="booking-declined" class="booking-state booking-state--error" aria-labelledby="booking-declined-heading" hidden>
+                    <p class="step-label">Request update</p>
+                    <h3 id="booking-declined-heading">No driver accepted this request</h3>
+                    <p>Review the trip details or try another pickup time.</p>
+                  </section>
+                  <section id="booking-cancelled" class="booking-state" aria-labelledby="booking-cancelled-heading" hidden>
+                    <p class="step-label">Request cancelled</p>
+                    <h3 id="booking-cancelled-heading">This ride request is cancelled</h3>
+                  </section>
+                  <button id="cancel-ride-button" class="button button--quiet" type="button" data-action="cancel-ride" hidden>Cancel ride request</button>
+                </div>
+                <p id="booking-status-message" class="form-status" role="status" aria-live="polite"></p>
+              </aside>
             </div>
           </section>
-        </aside>
-      </div>
 
-      <p class="privacy-note">Your trip details stay in this browser preview. Nothing is sent or saved.</p>
-    </main>
+          <section id="passenger-history-panel" class="passenger-panel" data-passenger-panel="history" aria-labelledby="history-heading" hidden>
+            <div class="history-heading">
+              <div>
+                <p class="step-label">Your trips</p>
+                <h2 id="history-heading">Ride history</h2>
+              </div>
+            </div>
+            <p id="history-loading" class="state-message state-message--loading" role="status" hidden>Loading your rides…</p>
+            <p id="history-empty" class="state-message" hidden>You don’t have any rides yet.</p>
+            <p id="history-error" class="state-message state-message--error" role="alert" hidden>We couldn’t load your rides. Try again.</p>
+            <ul id="history-list" class="ride-history-list" aria-label="Your rides" hidden></ul>
+            <template id="ride-history-template">
+              <li class="history-item">
+                <div class="history-item__route">
+                  <p><span data-history-pickup></span><span class="route-separator" aria-hidden="true">→</span><span data-history-destination></span></p>
+                  <p class="history-item__meta"><time data-history-time></time> <span data-history-passengers></span></p>
+                </div>
+                <div class="history-item__fare">
+                  <p data-history-status></p>
+                  <p data-history-total></p>
+                  <button class="button button--quiet history-series-cancel" type="button" data-history-cancel-series hidden>Cancel future weekly requests</button>
+                  <p class="history-series-feedback" data-history-series-feedback role="status" aria-live="polite" hidden></p>
+                </div>
+              </li>
+            </template>
+          </section>
+        </section>
 
-    <footer class="site-footer">
-      <div class="site-footer__inner">
-        <p>Steadlane</p>
-        <p>Beta development preview</p>
-      </div>
-    </footer>
+        <section id="driver-view" class="app-view driver-view" data-view="driver" aria-labelledby="driver-heading" hidden>
+          <div class="view-intro">
+            <div>
+              <p class="eyebrow">Driver workspace</p>
+              <h1 id="driver-heading">Ride requests</h1>
+              <p class="intro__copy">Review trip details and accept or decline each request.</p>
+            </div>
+            <p id="driver-account-label" class="role-label">Driver account</p>
+          </div>
+
+          <section class="driver-queue" aria-labelledby="driver-queue-heading">
+            <div class="section-heading">
+              <div>
+                <p class="step-label">Current requests</p>
+                <h2 id="driver-queue-heading">Active rides and new requests</h2>
+              </div>
+            </div>
+            <p id="driver-loading" class="state-message state-message--loading" role="status" hidden>Loading requests…</p>
+            <p id="driver-empty" class="state-message" hidden>No active rides are assigned to you, and no new requests are waiting.</p>
+            <p id="driver-error" class="state-message state-message--error" role="alert" hidden>We couldn’t load requests. Try again.</p>
+            <ul id="driver-list" class="driver-request-list" aria-label="Active rides and new ride requests" hidden></ul>
+            <p id="driver-action-status" class="form-status" role="status" aria-live="polite"></p>
+          </section>
+
+          <section class="driver-availability" aria-labelledby="availability-heading">
+            <div class="section-heading">
+              <div>
+                <p class="step-label">Weekly schedule</p>
+                <h2 id="availability-heading">Your availability</h2>
+              </div>
+            </div>
+            <p class="input-hint">Set one time window for each day you can drive. Times use America/New_York. Overnight windows aren’t supported.</p>
+            <p id="availability-loading" class="state-message state-message--loading" role="status" hidden>Loading your availability…</p>
+            <p id="availability-empty" class="state-message" hidden>No availability saved yet. Select days and set your times.</p>
+            <p id="availability-error" class="state-message state-message--error" role="alert" hidden></p>
+            <form id="availability-form" class="availability-form">
+              <div class="availability-days">
+                <div class="availability-day" data-availability-day="1"><label><input type="checkbox" name="availability-day" value="1"><span>Monday</span></label><label>From <input type="time" name="availability-start" disabled></label><label>To <input type="time" name="availability-end" disabled></label></div>
+                <div class="availability-day" data-availability-day="2"><label><input type="checkbox" name="availability-day" value="2"><span>Tuesday</span></label><label>From <input type="time" name="availability-start" disabled></label><label>To <input type="time" name="availability-end" disabled></label></div>
+                <div class="availability-day" data-availability-day="3"><label><input type="checkbox" name="availability-day" value="3"><span>Wednesday</span></label><label>From <input type="time" name="availability-start" disabled></label><label>To <input type="time" name="availability-end" disabled></label></div>
+                <div class="availability-day" data-availability-day="4"><label><input type="checkbox" name="availability-day" value="4"><span>Thursday</span></label><label>From <input type="time" name="availability-start" disabled></label><label>To <input type="time" name="availability-end" disabled></label></div>
+                <div class="availability-day" data-availability-day="5"><label><input type="checkbox" name="availability-day" value="5"><span>Friday</span></label><label>From <input type="time" name="availability-start" disabled></label><label>To <input type="time" name="availability-end" disabled></label></div>
+                <div class="availability-day" data-availability-day="6"><label><input type="checkbox" name="availability-day" value="6"><span>Saturday</span></label><label>From <input type="time" name="availability-start" disabled></label><label>To <input type="time" name="availability-end" disabled></label></div>
+                <div class="availability-day" data-availability-day="7"><label><input type="checkbox" name="availability-day" value="7"><span>Sunday</span></label><label>From <input type="time" name="availability-start" disabled></label><label>To <input type="time" name="availability-end" disabled></label></div>
+              </div>
+              <p id="availability-form-error" class="form-error" role="alert" hidden></p>
+              <p id="availability-save-status" class="form-status" role="status" aria-live="polite"></p>
+              <button id="save-availability-button" class="button button--primary" type="submit">Save availability</button>
+            </form>
+          </section>
+
+          <template id="driver-request-template">
+            <li class="driver-request">
+              <article data-driver-request>
+                <div class="request-heading">
+                  <div>
+                    <p class="step-label">Ride request</p>
+                    <h3 data-request-heading></h3>
+                  </div>
+                  <p class="request-state" data-request-status>Pending</p>
+                </div>
+                <dl class="request-details">
+                  <div>
+                    <dt>Pickup</dt>
+                    <dd data-request-pickup></dd>
+                  </div>
+                  <div>
+                    <dt>Destination</dt>
+                    <dd data-request-destination></dd>
+                  </div>
+                  <div>
+                    <dt>Pickup time</dt>
+                    <dd data-request-time></dd>
+                  </div>
+                  <div>
+                    <dt>Passengers</dt>
+                    <dd data-request-passengers></dd>
+                  </div>
+                  <div>
+                    <dt>Route</dt>
+                    <dd data-request-route></dd>
+                  </div>
+                  <div>
+                    <dt>Fare quote</dt>
+                    <dd data-request-total></dd>
+                  </div>
+                </dl>
+                <p class="request-feedback" data-request-feedback role="status" aria-live="polite" hidden></p>
+                <div class="request-actions">
+                  <button class="button button--primary" type="button" data-action="accept">Accept ride</button>
+                  <button class="button button--quiet" type="button" data-action="decline">Decline</button>
+                </div>
+              </article>
+            </li>
+          </template>
+
+          <p id="app-status" class="sr-only" role="status" aria-live="polite"></p>
+        </section>
+      </main>
+
+      <footer class="site-footer">
+        <div class="site-footer__inner">
+          <p>Steadlane</p>
+          <p>Passenger and driver beta</p>
+        </div>
+      </footer>
+    </div>
   </body>
 </html>

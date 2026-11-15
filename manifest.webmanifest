@@ -1,0 +1,21 @@
+{
+  "id": "/",
+  "name": "Steadlane rides",
+  "short_name": "Steadlane",
+  "description": "Plan and request a private ride with Steadlane.",
+  "lang": "en-US",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f3f6f4",
+  "theme_color": "#123d38",
+  "icons": [
+    {
+      "src": "/assets/steadlane-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

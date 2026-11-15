@@ -1,7 +1,16 @@
 *
 !index.html
+!manifest.webmanifest
+!service-worker.js
 !src/
 src/*
+src/worker.js
 !src/app.js
+!src/auth.js
+!src/booking-api.js
+!src/map.js
 !src/pricing.js
 !src/styles.css
+!assets/
+assets/*
+!assets/steadlane-icon.svg
