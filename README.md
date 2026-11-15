@@ -2,7 +2,7 @@
 
 Steadlane is a passenger ride-request beta hosted as a Cloudflare Worker with static assets. Supabase Auth and Postgres store accounts and booking data; Geoapify provides address search, place details, driving routes, and map tiles.
 
-This is an early beta. Fare rates are provisional sample values, there is no payment processing or tipping collection, and a ride is not confirmed until an invited driver accepts it.
+This is an early beta. Fare rates are provisional sample values. Test-mode Stripe Checkout is available only after an invited driver accepts a ride; each accepted ride in a recurring series is paid separately. Live payments and tipping are not enabled. A ride is not confirmed until a driver accepts it.
 
 ## Current fare estimate
 
@@ -18,14 +18,9 @@ The passenger sees the quote as provisional. Approve the fare schedule before de
 
 `stopFeePerStop` is currently `null`; no stop fee is assumed. Estimates with intermediate stops show the known subtotal and `bookable: false`, with a null total, until a fee is explicitly configured.
 
-## Cincinnati and Northern Kentucky beta area
+## Ohio, Kentucky, and Indiana beta area
 
-The current beta accepts pickup, intermediate stop, and destination addresses within this approximate rectangle:
-
-- Longitude: **-84.92 to -84.20**
-- Latitude: **38.82 to 39.60**
-
-It includes Cincinnati and Hamilton, with the west edge near Lawrenceburg, Indiana, the north edge near Franklin, Ohio, and the south edge near Walton, Kentucky. This is a geographic rectangle, not a city, county, or state boundary. Every selected route point must fall inside it. Address suggestions are filtered to this area, and the Worker checks Geoapify's canonical coordinates again when creating a fare estimate.
+The current beta accepts pickup, intermediate stop, and destination addresses in Ohio, Kentucky, and Indiana. Address search is limited to the United States and filters results to those three states. Before requesting a route or fare, the Worker checks each selected place against Geoapify's canonical state and country details. A suggestion outside the three-state area cannot be used to request a ride.
 
 ## Account model
 
@@ -54,7 +49,7 @@ It includes Cincinnati and Hamilton, with the west edge near Lawrenceburg, India
 
 ## Supabase project setup
 
-Public address search, route estimates, fare rates, and map tiles work without Supabase configuration or passenger sign-in. To enable accounts and ride requests, create a Supabase project and get its project URL and publishable key from the project's Connect dialog or API Keys settings. Then:
+Public address search, route estimates, fare rates, and map tiles work without Supabase configuration or passenger sign-in. The Preview values in `wrangler.jsonc` currently point to the Supabase project supplied for this beta; confirm it is intended for Preview/test data before applying migrations or entering ride details. Production values remain placeholders. To enable accounts and ride requests, configure the Supabase project URL and publishable key, then:
 
 1. Replace the two clearly marked public placeholders in `wrangler.jsonc`: `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY`. The URL and publishable key are returned by `/api/config`; the publishable key is intended to be public and is protected by Postgres grants and row-level security.
 2. In Supabase Auth, enable email signups and email confirmations. Configure Site URL and the deployed and local redirect URLs. Configure custom SMTP before using addresses outside the organization's team.
@@ -69,10 +64,16 @@ The signup trigger copies only validated `full_name` and `phone` metadata into a
 
 Cloudflare Rate Limit bindings enforce approximate per-IP limits: 30 address searches per minute, 8 route estimates per minute, and 120 map tiles per minute. Cloudflare documents that these counters are approximate and per location, so a short burst may exceed the limit. Production and Preview use separate namespace IDs. All namespace IDs must be unique within the Cloudflare account; verify the production and Preview IDs do not collide with other bindings before deploying. These bindings require Wrangler v4.36.0 or later. See [Cloudflare Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/).
 
-Replace the public placeholders in `wrangler.jsonc` before deploying. Set these Worker secrets in Cloudflare; do not commit them or send them in chat:
+Replace the public placeholders in `wrangler.jsonc` before deploying. Set the service credentials as Cloudflare Worker secrets; do not commit them or send them in chat:
 
 - `GEOAPIFY_API_KEY` — Geoapify key with access to autocomplete, place details, routing, and map tiles.
-- `SUPABASE_SECRET_KEY` — Supabase `sb_secret_...` key. The Worker uses it only to insert a server-calculated quote row. It is not returned by `/api/config`, is never used by browser code, and is not used for passenger/driver reads or booking changes. The database migration grants the `service_role` only the quote insert columns; the secret key still has elevated project access if compromised, so protect and rotate it like any other server credential.
+- `SUPABASE_SECRET_KEY` — Supabase `sb_secret_...` key. The Worker uses it only for server-calculated quote inserts and the narrowly allowlisted payment-session and signed-webhook RPCs. It is not returned by `/api/config`, is never used by browser code, and is not used for passenger/driver reads or ride changes. It remains a powerful project credential if compromised; protect and rotate it like any other server secret.
+- `STRIPE_SECRET_KEY` — a rotated Stripe test-mode secret beginning `sk_test_`. The Worker rejects live-mode keys. Never place this secret in browser code, GitHub, or chat.
+- `STRIPE_WEBHOOK_SECRET` — the signing secret for the Stripe test-mode webhook pointed at `/api/stripe/webhook`.
+
+Stripe Checkout requires the `steadlane_stripe_payments` migration before passenger payments can be enabled. Add `STRIPE_PAYMENTS_ENABLED=true` as a Preview-only Worker variable only after the migration is applied and all three payment secrets (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and `SUPABASE_SECRET_KEY`) are configured. The app reports payments enabled only when those test-mode credentials are present and Stripe Tax remains off. Keep payment secrets in Cloudflare Preview; do not configure production secrets for this beta. Configure a Stripe test-mode webhook for `/api/stripe/webhook` and subscribe to `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`, and `charge.refunded`.
+
+Stripe Tax is not enabled by this beta. Setting `STRIPE_AUTOMATIC_TAX_ENABLED=true` keeps Checkout unavailable until a later tax implementation is reviewed. Before adding it, confirm where Steadlane is registered to collect tax and verify the correct product tax code, tax behavior, and location basis with a tax professional. Stripe Tax uses customer location and product tax configuration to calculate tax. See [Stripe Tax registrations](https://docs.stripe.com/tax/registrations), [automatic tax settings](https://docs.stripe.com/tax/checkout), and [tax calculation inputs](https://docs.stripe.com/tax/invoicing).
 
 The Geoapify key is sent only from the Worker to Geoapify. Map tiles are served through `/api/map/...`; the page displays Geoapify, OpenMapTiles, and OpenStreetMap attribution as required by the [Geoapify map tile documentation](https://apidocs.geoapify.com/docs/maps/).
 
@@ -86,9 +87,9 @@ Cloudflare preview branch builds and public Preview URLs are enabled. After a su
 
 The repository also has a separate, manually triggered GitHub Actions workflow. It runs `npm test` and then deploys with Wrangler, but only when dispatched from `main`. It requires `CLOUDFLARE_ACCOUNT_ID` and a least-privilege `CLOUDFLARE_API_TOKEN` in GitHub Actions secrets. Use one deployment path for a release; manually dispatching the workflow after Cloudflare has already deployed the same `main` commit would publish it twice. Neither path applies the Supabase migration or creates external resources.
 
-The Cloudflare build connection already has its own build token; do not copy that token into GitHub or the repository. Preview deployments use the separate `previews` settings in `wrangler.jsonc`, including empty Supabase variables so they cannot accidentally connect to production. Once a staging Supabase project exists, set its URL and publishable key in `previews.vars` and add `GEOAPIFY_API_KEY` and `SUPABASE_SECRET_KEY` as secrets for this Preview in Cloudflare. Previews Base secrets seed new previews only, so configure this existing preview directly. Keep production secrets and values separate. The production placeholders currently in `wrangler.jsonc` intentionally make `/api/config` unavailable until real project values are configured.
+The Cloudflare build connection already has its own build token; do not copy that token into GitHub or the repository. Preview deployments use the separate `previews` settings in `wrangler.jsonc`; those values point to the supplied Supabase project, while production values remain placeholders. Add `GEOAPIFY_API_KEY` and `SUPABASE_SECRET_KEY` as secrets for this Preview in Cloudflare. Add the rotated Stripe test secret and webhook signing secret only after reviewing the migration and configuring the Stripe test endpoint; then set `STRIPE_PAYMENTS_ENABLED=true` in this Preview. Previews Base secrets seed new previews only, so configure this existing preview directly. Keep production secrets and values separate. The production placeholders currently in `wrangler.jsonc` intentionally make `/api/config` unavailable until real project values are configured.
 
-To preview the Worker locally, use Wrangler v4.36.0 or later with a local `.dev.vars` file (ignored by Git) containing the Supabase URL and publishable key, `SUPABASE_SECRET_KEY`, and `GEOAPIFY_API_KEY`. The project currently has no local Wrangler dependency or build script; use the Wrangler CLI and run `wrangler dev` from the repository root. The hosted `/api/config` endpoint returns only the Supabase URL and publishable key.
+To preview the Worker locally, use Wrangler v4.36.0 or later with a local `.dev.vars` file (ignored by Git) containing the Supabase URL and publishable key, `SUPABASE_SECRET_KEY`, and `GEOAPIFY_API_KEY`. The project currently has no local Wrangler dependency or build script; use the Wrangler CLI and run `wrangler dev` from the repository root. The hosted `/api/config` endpoint returns the Supabase URL, publishable key, and a boolean indicating whether test Checkout is fully configured; it never returns a secret.
 
 ## API used by the browser app
 
@@ -96,7 +97,7 @@ To preview the Worker locally, use Wrangler v4.36.0 or later with a local `.dev.
 
 | Request | Purpose |
 | --- | --- |
-| `GET /api/config` | Public Supabase URL and publishable key only |
+| `GET /api/config` | Public Supabase URL and publishable key, plus a boolean indicating whether test Checkout is fully configured |
 | `GET /api/rates` | Current provisional fare schedule, with `stopFeePerStop: null` while unconfigured |
 | `GET /api/me` | Current profile and Auth email |
 | `PATCH /api/me` | Update the passenger name and phone; role is not writable |
@@ -104,6 +105,8 @@ To preview the Worker locally, use Wrangler v4.36.0 or later with a local `.dev.
 | `POST /api/route-quote` | Public, rate-limited route estimate; a passenger token saves a ten-minute quote only if priced completely |
 | `GET /api/bookings` | Passenger history or a driver's open queue and assigned rides, including recurring series IDs, as allowed by RLS |
 | `POST /api/bookings` | Create a ride request from a quote ID and idempotency key |
+| `POST /api/bookings/{id}/checkout-session` | Create a hosted test Checkout session for an accepted unpaid ride owned by the signed-in passenger |
+| `POST /api/stripe/webhook` | Verify and process Stripe payment events; this endpoint uses Stripe's signature instead of a passenger session |
 | `POST /api/bookings/{id}/cancel` | Cancel an owned pending ride request |
 | `POST /api/driver-response` | Accept or decline a request as an invited driver |
 | `GET /api/driver/availability` | Read the driver's weekly schedule |
@@ -112,13 +115,15 @@ To preview the Worker locally, use Wrangler v4.36.0 or later with a local `.dev.
 | `POST /api/recurring-bookings/{id}/cancel` | Cancel a series and its remaining pending occurrences |
 | `GET /api/map/{z}/{x}/{y}.png` | Same-origin Geoapify raster map tile proxy |
 
-The quote request accepts `{ pickup: { placeId }, stops: [{ placeId }], destination: { placeId }, pickupAt, passengerCount }`; `stops` is optional and limited to three ordered intermediate stops. The Worker resolves canonical labels and coordinates from Geoapify, checks each point against the service rectangle, requests the complete driving route, and prices it on the server. Multi-leg GeoJSON is flattened to a LineString for the map and saved with canonical stop snapshots. The fare response contains `stopCount`, `stopCharge`, `knownSubtotal`, `bookable`, and nullable `total`. Without a configured stop fee, a stopped route returns its known subtotal with `stopCharge: null`, `bookable: false`, and `total: null`; it cannot be booked. The browser cannot create or change quote rows.
+The quote request accepts `{ pickup: { placeId }, stops: [{ placeId }], destination: { placeId }, pickupAt, passengerCount }`; `stops` is optional and limited to three ordered intermediate stops. The Worker resolves canonical labels and coordinates from Geoapify, verifies that each selected point is in Ohio, Kentucky, or Indiana, requests the complete driving route, and prices it on the server. Multi-leg GeoJSON is flattened to a LineString for the map and saved with canonical stop snapshots. The fare response contains `stopCount`, `stopCharge`, `knownSubtotal`, `bookable`, and nullable `total`. Without a configured stop fee, a stopped route returns its known subtotal with `stopCharge: null`, `bookable: false`, and `total: null`; it cannot be booked. The browser cannot create or change quote rows.
 
 Driver availability accepts one window per ISO weekday (Monday 1 through Sunday 7), using local `HH:mm` times in `America/New_York`. Windows cannot cross midnight. Queue visibility and both driver response decisions are checked against the saved availability window for that pickup. Recurring schedules use the same weekday numbering and timezone; their inclusive local date range is limited to 90 calendar days. Missing or repeated daylight-saving times are rejected. Each occurrence is created as an individual request and can be accepted separately. Cancelling the series cancels its pending occurrences; already accepted rides remain assigned.
 
 Booking creation calls `create_booking_from_quote`, which locks the owned quote, checks expiry and unused status, snapshots its server-computed route and fare, writes the passenger contact snapshot, and consumes the quote in one transaction. Retrying with the same idempotency key returns the existing booking. A second key cannot book the same quote. `respond_to_booking` serializes driver decisions under a booking row lock, so only one driver can accept. Driver declines are recorded per driver; the request remains available to other drivers. `cancel_booking` permits only the owning passenger to cancel a pending request; an assigned ride cannot be cancelled through this endpoint.
 
-RLS exposes passenger bookings to their owner, pending requests to promoted drivers who have not declined them and whose availability matches the pickup time, and assigned rides to their assigned driver. Passenger contact is stored separately; drivers can read it only after assignment. Route labels, coordinates, ordered stops, route geometry, pickup time, passenger count, and fare are stored with the quote and each booking. The current beta service area is the approximate Cincinnati and Northern Kentucky rectangle listed above.
+RLS exposes passenger bookings to their owner, pending requests to promoted drivers who have not declined them and whose availability matches the pickup time, and assigned rides to their assigned driver. Passenger contact is stored separately; drivers can read it only after assignment. Route labels, coordinates, ordered stops, route geometry, pickup time, passenger count, and fare are stored with the quote and each booking. Pickup, stop, and destination points must be in Ohio, Kentucky, or Indiana.
+
+When the payment migration is applied and Preview test secrets are set, only the passenger who owns an accepted booking can open Checkout. Checkout amount and currency come from the stored server fare snapshot. The app shows payment as complete only after a signed, deduplicated Stripe webhook updates the payment record; a browser redirect alone never marks a ride paid. Each recurring occurrence is its own ride and its own payment. Refunds and ride cancellations after acceptance are not automated in this beta; handle them in the Stripe Dashboard and contact the passenger directly. Passengers can read only their own payment attempts; drivers do not receive the passenger's payment status.
 
 ## Build and validation
 

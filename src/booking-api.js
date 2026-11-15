@@ -41,6 +41,17 @@ function normalizeBooking(row) {
   const fareStopCents = row.fare_stop_cents ?? row.fareStopCents;
   const databaseStatus = row.status;
   const status = databaseStatus === "assigned" ? "accepted" : databaseStatus;
+  const rawPaymentStatus = row.payment_status ?? row.paymentStatus ?? null;
+  const normalizedPaymentStatus = String(rawPaymentStatus).toLowerCase();
+  const paymentStatus = [
+    "unpaid",
+    "pending",
+    "paid",
+    "failed",
+    "expired",
+    "partially_refunded",
+    "refunded",
+  ].includes(normalizedPaymentStatus) ? normalizedPaymentStatus : null;
   const stops = Array.isArray(row.stops) ? row.stops : [];
 
   return {
@@ -65,6 +76,7 @@ function normalizeBooking(row) {
       : Number(fareStopCents) / 100,
     currency: row.currency || "USD",
     status,
+    paymentStatus,
     driverId: row.assigned_driver_id ?? row.driver_id ?? row.driverId ?? null,
     createdAt: row.created_at ?? row.createdAt ?? null,
     passengerName: row.passenger_name ?? row.passengerName ?? null,
@@ -161,8 +173,9 @@ export function createBookingApi(authClient) {
       return normalizeProfile(payload?.profile);
     },
 
-    async searchAddresses(query, { signal } = {}) {
+    async searchAddresses(query, { signal, fullAddress = false } = {}) {
       const params = new URLSearchParams({ q: String(query ?? "") });
+      if (fullAddress) params.set("mode", "full");
       const payload = await request(`/api/address?${params}`, { signal, auth: "optional" });
       return { suggestions: Array.isArray(payload?.suggestions) ? payload.suggestions : [] };
     },
@@ -184,6 +197,17 @@ export function createBookingApi(authClient) {
       const payload = await request("/api/bookings?limit=50");
       const bookings = Array.isArray(payload?.bookings) ? payload.bookings : [];
       return bookings.map(normalizeBooking).filter(Boolean);
+    },
+
+    async createCheckoutSession({ bookingId }) {
+      const payload = await request(`/api/bookings/${encodeURIComponent(bookingId)}/checkout-session`, {
+        method: "POST",
+        body: {},
+      });
+      return {
+        url: typeof payload?.url === "string" ? payload.url : null,
+        paymentStatus: typeof payload?.paymentStatus === "string" ? payload.paymentStatus : null,
+      };
     },
 
     async cancelBooking({ bookingId }) {

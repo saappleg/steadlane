@@ -1,20 +1,33 @@
 import { calculateFareBreakdown, DEFAULT_RATES } from "./pricing.js";
 import { validateWeeklySchedule } from "./scheduling.js";
+import {
+  createStripeCheckoutSession,
+  retrieveStripeCheckoutSession,
+  verifyStripeWebhook,
+} from "./stripe.js";
 
 const MAX_API_BODY_BYTES = 20_000;
 const MAX_LABEL_LENGTH = 240;
 const MAX_ROUTE_POINTS = 10_000;
+const MAX_STRIPE_WEBHOOK_BYTES = 1_000_000;
 const MAX_DISTANCE_MILES = 2_500;
 const MAX_DURATION_MINUTES = 1_440;
+const MAX_PAYMENT_STATUS_ROWS = 1_000;
 const QUOTE_LIFETIME_MS = 10 * 60 * 1000;
 const PRICING_VERSION = "sample-v1";
 const WEEKLY_SCHEDULE_TIME_ZONE = "America/New_York";
-const BETA_SERVICE_AREA = Object.freeze({
-  westLongitude: -84.92,
-  eastLongitude: -84.20,
-  southLatitude: 38.82,
-  northLatitude: 39.60,
+const ADDRESS_SEARCH_AREA = Object.freeze({
+  westLongitude: -90,
+  eastLongitude: -80,
+  southLatitude: 36,
+  northLatitude: 42.2,
 });
+const SERVICE_STATE_CODES = new Set(["OH", "KY", "IN"]);
+const SERVICE_STATE_NAMES = new Map([
+  ["OHIO", "OH"],
+  ["KENTUCKY", "KY"],
+  ["INDIANA", "IN"],
+]);
 const BOOKING_COLUMNS = [
   "id",
   "pickup_label",
@@ -102,6 +115,21 @@ function currentConfig(env) {
     supabaseUrl: parsedUrl.href.replace(/\/+$/, ""),
     supabasePublishableKey,
   };
+}
+
+function stripePaymentsAreEnabled(env) {
+  const taxDisabled = env.STRIPE_AUTOMATIC_TAX_ENABLED === undefined ||
+    env.STRIPE_AUTOMATIC_TAX_ENABLED === null ||
+    env.STRIPE_AUTOMATIC_TAX_ENABLED === "" ||
+    env.STRIPE_AUTOMATIC_TAX_ENABLED === "false";
+  return env.STRIPE_PAYMENTS_ENABLED === "true" &&
+    typeof env.STRIPE_SECRET_KEY === "string" &&
+    /^sk_test_[A-Za-z0-9_]{20,}$/.test(env.STRIPE_SECRET_KEY.trim()) &&
+    typeof env.SUPABASE_SECRET_KEY === "string" &&
+    env.SUPABASE_SECRET_KEY.trim().startsWith("sb_secret_") &&
+    typeof env.STRIPE_WEBHOOK_SECRET === "string" &&
+    /^whsec_[A-Za-z0-9_]{20,}$/.test(env.STRIPE_WEBHOOK_SECRET.trim()) &&
+    taxDisabled;
 }
 
 function stopFeeCents(env) {
@@ -259,6 +287,8 @@ async function readUpstreamJson(response, serviceName) {
       if (message.includes("stop pricing")) fail(409, "stop_pricing_required", "A stop fee must be configured before this route can be booked.");
       if (message.includes("decision already recorded")) fail(409, "decision_recorded", "You already responded to this ride request.");
       if (message.includes("driver is not available")) fail(409, "driver_unavailable", "This pickup is outside your saved availability.");
+      if (message.includes("accepted before payment")) fail(409, "ride_not_accepted", "The driver must accept this ride before payment is available.");
+      if (message.includes("fare is not payable")) fail(409, "fare_unavailable", "This stored fare cannot be paid yet.");
       if (message.includes("role")) fail(403, "role_required", "This account is not authorized for that action.");
     }
     fail(502, `${serviceName}_unavailable`, "A connected service could not complete the request.");
@@ -294,7 +324,16 @@ async function fetchGeoapifyJson(url) {
 async function supabaseRequest(env, path, { method = "GET", accessToken, secretKey, body, prefer } = {}) {
   const config = currentConfig(env);
   if (!config) fail(503, "supabase_not_configured", "The booking service is not configured yet.");
-  if (secretKey && (path !== "/rest/v1/ride_quotes" || method !== "POST" || accessToken)) {
+  const serverOnlyPostPaths = new Set([
+    "/rest/v1/rpc/record_booking_checkout_session",
+    "/rest/v1/rpc/expire_booking_checkout_session",
+    "/rest/v1/rpc/expire_unlinked_booking_checkout_attempt",
+    "/rest/v1/rpc/process_stripe_webhook_event",
+  ]);
+  const allowedSecretOperation =
+    (path === "/rest/v1/ride_quotes" && method === "POST") ||
+    (serverOnlyPostPaths.has(path) && method === "POST");
+  if (secretKey && (!allowedSecretOperation || accessToken)) {
     fail(500, "invalid_server_database_operation", "The server database operation is not allowed.");
   }
   const url = new URL(path, `${config.supabaseUrl}/`);
@@ -454,13 +493,28 @@ function validCoordinate(latitude, longitude) {
   return Number.isFinite(latitude) && Number.isFinite(longitude) && latitude >= -90 && latitude <= 90 && longitude >= -180 && longitude <= 180;
 }
 
-function isInsideBetaServiceArea(latitude, longitude) {
-  return (
-    validCoordinate(latitude, longitude) &&
-    longitude >= BETA_SERVICE_AREA.westLongitude &&
-    longitude <= BETA_SERVICE_AREA.eastLongitude &&
-    latitude >= BETA_SERVICE_AREA.southLatitude &&
-    latitude <= BETA_SERVICE_AREA.northLatitude
+function normalizeServiceStateCode(properties) {
+  if (typeof properties?.country_code !== "string" || properties.country_code.trim().toLowerCase() !== "us") {
+    return null;
+  }
+  const candidates = [properties.state_code, properties.state];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") continue;
+    let normalized = candidate.trim().toUpperCase();
+    if (normalized.startsWith("US-")) normalized = normalized.slice(3);
+    if (SERVICE_STATE_CODES.has(normalized)) return normalized;
+    const namedCode = SERVICE_STATE_NAMES.get(normalized);
+    if (namedCode) return namedCode;
+  }
+  return null;
+}
+
+function isInsideServiceArea(place) {
+  return Boolean(
+    place &&
+    validCoordinate(place.latitude, place.longitude) &&
+    place.countryCode === "us" &&
+    SERVICE_STATE_CODES.has(place.stateCode),
   );
 }
 
@@ -477,6 +531,10 @@ async function getPlaceDetails(placeId, apiKey) {
   const longitude = Number(properties?.lon);
   const label = typeof properties?.formatted === "string" ? properties.formatted.trim() : "";
   const returnedPlaceId = properties?.place_id;
+  const countryCode = typeof properties?.country_code === "string"
+    ? properties.country_code.trim().toLowerCase()
+    : "";
+  const stateCode = normalizeServiceStateCode(properties);
   if (
     !validCoordinate(latitude, longitude) ||
     !label ||
@@ -488,7 +546,7 @@ async function getPlaceDetails(placeId, apiKey) {
   ) {
     fail(400, "invalid_place", "Choose an address returned by the address suggestions.");
   }
-  return { label, latitude, longitude, placeId: returnedPlaceId };
+  return { label, latitude, longitude, placeId: returnedPlaceId, countryCode, stateCode };
 }
 
 function normalizeRouteGeometry(geometry) {
@@ -574,8 +632,8 @@ async function createRouteQuote(request, env) {
   if (new Set(resolvedPlaces.map((place) => place.placeId)).size !== resolvedPlaces.length) {
     fail(400, "duplicate_address", "Choose a different pickup, stop, and destination for each route point.");
   }
-  if (resolvedPlaces.some((place) => !isInsideBetaServiceArea(place.latitude, place.longitude))) {
-    fail(422, "outside_service_area", "Pickup and destination must both be within the current Cincinnati and Northern Kentucky beta service area.");
+  if (resolvedPlaces.some((place) => !isInsideServiceArea(place))) {
+    fail(422, "outside_service_area", "Pickup, stops, and destination must be within Ohio, Kentucky, or Indiana.");
   }
   const pickup = resolvedPlaces[0];
   const destination = resolvedPlaces.at(-1);
@@ -738,43 +796,65 @@ async function createRouteQuote(request, env) {
 }
 
 async function searchAddresses(request, env) {
-  const query = new URL(request.url).searchParams.get("q")?.trim() || "";
+  const requestUrl = new URL(request.url);
+  const query = requestUrl.searchParams.get("q")?.trim() || "";
+  const mode = requestUrl.searchParams.get("mode") || "autocomplete";
   if (query.length < 2 || query.length > 160 || /[\u0000-\u001f]/.test(query)) {
     fail(400, "invalid_query", "Enter an address between 2 and 160 characters.");
   }
-  const url = new URL("https://api.geoapify.com/v1/geocode/autocomplete");
+  if (mode !== "autocomplete" && mode !== "full") {
+    fail(400, "invalid_query", "Choose a supported address search mode.");
+  }
+  const apiKey = requireGeoapifyKey(env);
+  const endpoint = mode === "full" ? "search" : "autocomplete";
+  const addressUrl = createGeoapifyAddressUrl(endpoint, query, apiKey);
+  const result = await fetchGeoapifyJson(addressUrl);
+  return { suggestions: addressSuggestions(result?.features) };
+}
+
+function createGeoapifyAddressUrl(endpoint, query, apiKey) {
+  const url = new URL(`https://api.geoapify.com/v1/geocode/${endpoint}`);
   url.searchParams.set("text", query);
-  url.searchParams.set("limit", "6");
+  url.searchParams.set("limit", "20");
   url.searchParams.set("lang", "en");
   url.searchParams.set(
     "filter",
-    `rect:${BETA_SERVICE_AREA.westLongitude},${BETA_SERVICE_AREA.southLatitude},${BETA_SERVICE_AREA.eastLongitude},${BETA_SERVICE_AREA.northLatitude}`,
+    `rect:${ADDRESS_SEARCH_AREA.westLongitude},${ADDRESS_SEARCH_AREA.southLatitude},${ADDRESS_SEARCH_AREA.eastLongitude},${ADDRESS_SEARCH_AREA.northLatitude}|countrycode:us`,
   );
-  url.searchParams.set("apiKey", requireGeoapifyKey(env));
-  const result = await fetchGeoapifyJson(url);
-  const features = Array.isArray(result?.features) ? result.features : [];
+  url.searchParams.set("format", "geojson");
+  url.searchParams.set("apiKey", apiKey);
+  return url;
+}
+
+function addressSuggestions(features) {
+  const addressFeatures = Array.isArray(features) ? features : [];
   const seen = new Set();
   const suggestions = [];
-  for (const feature of features) {
+  for (const feature of addressFeatures) {
     const properties = feature?.properties;
     const placeId = properties?.place_id;
     const label = typeof properties?.formatted === "string" ? properties.formatted.trim() : "";
     const latitude = Number(properties?.lat);
     const longitude = Number(properties?.lon);
+    const place = {
+      latitude,
+      longitude,
+      countryCode: typeof properties?.country_code === "string" ? properties.country_code.trim().toLowerCase() : "",
+      stateCode: normalizeServiceStateCode(properties),
+    };
     if (
       typeof placeId !== "string" ||
       placeId.length < 8 ||
       placeId.length > 512 ||
       !label ||
       label.length > MAX_LABEL_LENGTH ||
-      !validCoordinate(latitude, longitude) ||
-      !isInsideBetaServiceArea(latitude, longitude) ||
+      !isInsideServiceArea(place) ||
       seen.has(placeId)
     ) continue;
     seen.add(placeId);
     suggestions.push({ placeId, label, lat: latitude, lon: longitude });
   }
-  return { suggestions };
+  return suggestions;
 }
 
 function validateAvailability(input) {
@@ -855,8 +935,11 @@ async function saveDriverAvailability(request, user, env) {
 async function createRecurringBooking(request, user, env) {
   await requirePassenger(user, env);
   const body = await readJson(request);
-  if (!validUuid(body.quoteId) || !validUuid(body.idempotencyKey)) {
-    fail(400, "invalid_booking", "The quote and request IDs must be valid.");
+  if (
+    Object.keys(body).some((key) => !["quoteId", "idempotencyKey", "weekdays", "startDate", "endDate", "pickupTime"].includes(key)) ||
+    !validUuid(body.quoteId) || !validUuid(body.idempotencyKey)
+  ) {
+    fail(400, "invalid_booking", "Check the quote and weekly schedule details.");
   }
   let schedule;
   try {
@@ -890,6 +973,10 @@ async function createRecurringBooking(request, user, env) {
     !Array.isArray(result.bookings)
   ) {
     fail(502, "booking_invalid_response", "The recurring booking service returned an invalid response.");
+  }
+  const bookingIds = result.bookings.map((booking) => booking?.id).filter(validUuid);
+  if (bookingIds.length !== result.bookings.length || bookingIds.length === 0) {
+    fail(502, "booking_invalid_response", "The recurring booking service returned invalid ride requests.");
   }
   return {
     series: result.series,
@@ -930,8 +1017,11 @@ async function attachContacts(env, user, rows) {
 async function createBooking(request, env, user) {
   await requirePassenger(user, env);
   const body = await readJson(request);
-  if (!validUuid(body.quoteId) || !validUuid(body.idempotencyKey)) {
-    fail(400, "invalid_booking", "The quote and request IDs must be valid.");
+  if (
+    Object.keys(body).some((key) => !["quoteId", "idempotencyKey"].includes(key)) ||
+    !validUuid(body.quoteId) || !validUuid(body.idempotencyKey)
+  ) {
+    fail(400, "invalid_booking", "Check the ride request details and try again.");
   }
   const result = await supabaseRequest(env, "/rest/v1/rpc/create_booking_from_quote", {
     method: "POST",
@@ -944,7 +1034,7 @@ async function createBooking(request, env, user) {
 }
 
 async function listBookings(request, env, user) {
-  await getProfile(user, env);
+  const profile = await getProfile(user, env);
   const requestedLimit = Number(new URL(request.url).searchParams.get("limit") || "50");
   const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(100, requestedLimit)) : 50;
   const query = new URLSearchParams({
@@ -954,7 +1044,45 @@ async function listBookings(request, env, user) {
   });
   const rows = await supabaseRequest(env, `/rest/v1/bookings?${query}`, { accessToken: user.token });
   if (!Array.isArray(rows)) fail(502, "booking_invalid_response", "The booking service returned an invalid response.");
-  return { bookings: await attachContacts(env, user, rows) };
+  let bookings = await attachContacts(env, user, rows);
+  if (profile.role === "passenger" && stripePaymentsAreEnabled(env) && bookings.length > 0) {
+    const bookingIds = bookings.map((booking) => booking.id).filter(validUuid);
+    if (bookingIds.length > 0) {
+      const paymentQuery = new URLSearchParams({
+        select: "booking_id,status,attempt_number",
+        booking_id: `in.(${bookingIds.join(",")})`,
+        order: "attempt_number.desc",
+        limit: String(MAX_PAYMENT_STATUS_ROWS),
+      });
+      const attempts = await supabaseRequest(
+        env,
+        `/rest/v1/booking_payment_attempts?${paymentQuery}`,
+        { accessToken: user.token },
+      );
+      if (!Array.isArray(attempts)) fail(502, "payment_invalid_response", "The payment service returned invalid ride history.");
+      const latestStatusByBooking = new Map();
+      for (const attempt of attempts) {
+        if (
+          !isPlainObject(attempt) ||
+          !validUuid(attempt.booking_id) ||
+          !Number.isInteger(attempt.attempt_number) || attempt.attempt_number < 1 ||
+          !["pending", "paid", "failed", "expired", "partially_refunded", "refunded"].includes(attempt.status)
+        ) {
+          fail(502, "payment_invalid_response", "The payment service returned invalid ride history.");
+        }
+        if (!latestStatusByBooking.has(attempt.booking_id)) {
+          latestStatusByBooking.set(attempt.booking_id, attempt.status);
+        }
+      }
+      bookings = bookings.map((booking) => ({
+        ...booking,
+        ...(latestStatusByBooking.has(booking.id)
+          ? { payment_status: latestStatusByBooking.get(booking.id) }
+          : {}),
+      }));
+    }
+  }
+  return { bookings };
 }
 
 async function respondToBooking(request, env, user) {
@@ -970,8 +1098,8 @@ async function respondToBooking(request, env, user) {
     body: { p_booking_id: body.bookingId, p_decision: body.decision },
   });
   if (!isPlainObject(result) || !validUuid(result.id)) fail(502, "booking_invalid_response", "The booking service returned an invalid response.");
-  const [booking] = await attachContacts(env, user, [result]);
-  return { booking };
+  const [bookingWithContact] = await attachContacts(env, user, [result]);
+  return { booking: bookingWithContact };
 }
 
 async function cancelBooking(request, env, user, bookingId) {
@@ -986,6 +1114,299 @@ async function cancelBooking(request, env, user, bookingId) {
   if (!isPlainObject(result) || !validUuid(result.id)) fail(502, "booking_invalid_response", "The booking service returned an invalid response.");
   const [booking] = await attachContacts(env, user, [result]);
   return { booking };
+}
+
+function requireStripeTestKey(env) {
+  if (!stripePaymentsAreEnabled(env)) {
+    fail(503, "stripe_not_configured", "Test-mode payments are not configured yet.");
+  }
+}
+
+function requireSupabaseSecretKey(env) {
+  if (typeof env.SUPABASE_SECRET_KEY !== "string" || !env.SUPABASE_SECRET_KEY.startsWith("sb_secret_")) {
+    fail(503, "payment_storage_not_configured", "The payment service is not configured for booking updates yet.");
+  }
+  return env.SUPABASE_SECRET_KEY;
+}
+
+async function prepareBookingCheckout(env, user, bookingId) {
+  const result = await supabaseRequest(env, "/rest/v1/rpc/prepare_booking_checkout", {
+    method: "POST",
+    accessToken: user.token,
+    body: { p_booking_id: bookingId },
+  });
+  if (
+    !isPlainObject(result) ||
+    !validUuid(result.payment_attempt_id) ||
+    !["pending", "paid", "failed", "expired", "partially_refunded", "refunded"].includes(result.payment_status) ||
+    !Number.isSafeInteger(result.amount_cents) ||
+    result.amount_cents < 1 ||
+    result.amount_cents > 500_000 ||
+    result.currency !== "usd" ||
+    typeof result.pickup_at !== "string" ||
+    !Number.isFinite(Date.parse(result.pickup_at)) ||
+    (result.checkout_session_id !== null && (typeof result.checkout_session_id !== "string" || !/^cs_test_[A-Za-z0-9]+$/.test(result.checkout_session_id))) ||
+    (result.checkout_url !== null && (typeof result.checkout_url !== "string" || !/^https:\/\/checkout\.stripe\.com\/c\/pay\/cs_test_[A-Za-z0-9]+(?:\?.*)?$/.test(result.checkout_url))) ||
+    ((result.checkout_session_id === null) !== (result.checkout_url === null))
+  ) {
+    fail(502, "payment_invalid_response", "The payment service returned an invalid response.");
+  }
+  return result;
+}
+
+async function expireBookingCheckout(env, paymentAttemptId, sessionId) {
+  const result = await supabaseRequest(env, "/rest/v1/rpc/expire_booking_checkout_session", {
+    method: "POST",
+    secretKey: requireSupabaseSecretKey(env),
+    body: {
+      p_payment_attempt_id: paymentAttemptId,
+      p_checkout_session_id: sessionId,
+    },
+  });
+  if (!isPlainObject(result) || result.expired !== true) {
+    fail(502, "payment_invalid_response", "The payment service returned an invalid response.");
+  }
+}
+
+async function expireUnlinkedBookingCheckoutAttempt(env, paymentAttemptId) {
+  const result = await supabaseRequest(env, "/rest/v1/rpc/expire_unlinked_booking_checkout_attempt", {
+    method: "POST",
+    secretKey: requireSupabaseSecretKey(env),
+    body: { p_payment_attempt_id: paymentAttemptId },
+  });
+  if (!isPlainObject(result) || result.expired !== true || result.payment_status !== "expired") {
+    fail(502, "payment_invalid_response", "The expired payment attempt could not be retired safely.");
+  }
+}
+
+async function storeBookingCheckoutSession(env, paymentAttemptId, session) {
+  const result = await supabaseRequest(env, "/rest/v1/rpc/record_booking_checkout_session", {
+    method: "POST",
+    secretKey: requireSupabaseSecretKey(env),
+    body: {
+      p_payment_attempt_id: paymentAttemptId,
+      p_checkout_session_id: session.id,
+      p_checkout_url: session.url,
+      p_checkout_expires_at: new Date(session.expires_at * 1000).toISOString(),
+    },
+  });
+  if (!isPlainObject(result) || result.recorded !== true) {
+    fail(502, "payment_storage_unavailable", "The payment session could not be saved. Try again shortly.");
+  }
+}
+
+async function readStripeWebhookBody(request) {
+  if (!request.body) fail(400, "invalid_webhook", "The payment notification is invalid.");
+  const reader = request.body.getReader();
+  const chunks = [];
+  let byteLength = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      byteLength += value.byteLength;
+      if (byteLength > MAX_STRIPE_WEBHOOK_BYTES) {
+        await reader.cancel();
+        fail(413, "webhook_too_large", "The payment notification is too large.");
+      }
+      chunks.push(value);
+    }
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    fail(400, "invalid_webhook", "The payment notification is invalid.");
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    fail(400, "invalid_webhook", "The payment notification is invalid.");
+  }
+}
+
+async function createCheckoutSessionForAttempt(request, env, bookingId, prepared) {
+  const returnUrl = new URL("/", request.url);
+  returnUrl.searchParams.set("checkout", "return");
+  returnUrl.searchParams.set("booking_id", bookingId);
+  try {
+    return await createStripeCheckoutSession(env, {
+      paymentAttemptId: prepared.payment_attempt_id,
+      bookingId,
+      amountCents: prepared.amount_cents,
+      currency: prepared.currency,
+      pickupAt: prepared.pickup_at,
+      successUrl: returnUrl.href,
+      cancelUrl: returnUrl.href,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Stripe Tax")) {
+      fail(503, "tax_configuration_incomplete", "Automatic tax is not configured for this ride service yet.");
+    }
+    fail(502, "stripe_unavailable", "The payment page could not be created. Try again shortly.");
+  }
+}
+
+async function createBookingCheckoutSession(request, env, user, bookingId) {
+  await requirePassenger(user, env);
+  if (!validUuid(bookingId)) fail(400, "invalid_booking_id", "The ride request ID is invalid.");
+  const body = await readJson(request);
+  if (Object.keys(body).length !== 0) {
+    fail(400, "invalid_checkout_request", "Checkout uses the saved ride fare and does not accept payment details here.");
+  }
+  requireStripeTestKey(env);
+  let prepared = await prepareBookingCheckout(env, user, bookingId);
+  if (["paid", "partially_refunded", "refunded"].includes(prepared.payment_status)) {
+    fail(409, "payment_already_processed", "A payment is already recorded for this ride.");
+  }
+  if (prepared.payment_status !== "pending") {
+    fail(409, "payment_not_due", "This ride is not ready for payment. Refresh the ride list and try again.");
+  }
+
+  if (prepared.checkout_session_id) {
+    let existingSession;
+    try {
+      existingSession = await retrieveStripeCheckoutSession(env, prepared.checkout_session_id);
+    } catch {
+      fail(502, "stripe_unavailable", "The payment page could not be checked. Try again shortly.");
+    }
+    if (existingSession.status === "open") {
+      if (typeof existingSession.url !== "string") {
+        fail(502, "stripe_invalid_response", "The payment service returned an invalid Checkout address.");
+      }
+      return { status: 200, payload: { url: existingSession.url, paymentStatus: "pending" } };
+    }
+    if (existingSession.status === "complete") {
+      return { status: 202, payload: { paymentStatus: "pending" } };
+    }
+    if (existingSession.status !== "expired") {
+      fail(502, "stripe_invalid_response", "The payment service returned an invalid session state.");
+    }
+    await expireBookingCheckout(env, prepared.payment_attempt_id, prepared.checkout_session_id);
+    prepared = await prepareBookingCheckout(env, user, bookingId);
+    if (prepared.payment_status !== "pending" || prepared.checkout_session_id) {
+      fail(409, "payment_state_changed", "The payment state changed. Refresh the ride list and try again.");
+    }
+  }
+
+  let session = await createCheckoutSessionForAttempt(request, env, bookingId, prepared);
+  if (session.status === "expired") {
+    const expiredAttemptId = prepared.payment_attempt_id;
+    await expireUnlinkedBookingCheckoutAttempt(env, expiredAttemptId);
+    prepared = await prepareBookingCheckout(env, user, bookingId);
+    if (
+      prepared.payment_attempt_id === expiredAttemptId ||
+      prepared.payment_status !== "pending" ||
+      prepared.checkout_session_id
+    ) {
+      fail(409, "payment_state_changed", "The payment state changed. Refresh the ride list and try again.");
+    }
+    session = await createCheckoutSessionForAttempt(request, env, bookingId, prepared);
+  }
+  if (session.status !== "open" || typeof session.url !== "string") {
+    fail(502, "stripe_invalid_response", "The payment service did not return an open Checkout session.");
+  }
+  await storeBookingCheckoutSession(env, prepared.payment_attempt_id, session);
+  return { status: 200, payload: { url: session.url, paymentStatus: "pending" } };
+}
+
+function stripeEventId(value) {
+  if (typeof value === "string" && /^pi_[A-Za-z0-9]+$/.test(value)) return value;
+  if (isPlainObject(value) && typeof value.id === "string" && /^pi_[A-Za-z0-9]+$/.test(value.id)) return value.id;
+  return null;
+}
+
+async function handleStripeWebhook(request, env) {
+  if (typeof env.STRIPE_WEBHOOK_SECRET !== "string" || !/^whsec_[A-Za-z0-9_]{20,}$/.test(env.STRIPE_WEBHOOK_SECRET.trim())) {
+    fail(503, "stripe_webhook_not_configured", "The payment notification endpoint is not configured yet.");
+  }
+  const contentType = request.headers.get("content-type") || "";
+  if (!/^application\/json(?:\s*;|$)/i.test(contentType)) {
+    fail(415, "json_required", "The payment notification must be JSON.");
+  }
+  const declaredLength = Number(request.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_STRIPE_WEBHOOK_BYTES) {
+    fail(413, "webhook_too_large", "The payment notification is too large.");
+  }
+  const rawBody = await readStripeWebhookBody(request);
+  let event;
+  try {
+    event = await verifyStripeWebhook(
+      rawBody,
+      request.headers.get("stripe-signature"),
+      env.STRIPE_WEBHOOK_SECRET.trim(),
+    );
+  } catch {
+    event = null;
+  }
+  if (!event) fail(400, "invalid_stripe_signature", "The payment notification could not be verified.");
+
+  const supportedEvents = new Set([
+    "checkout.session.completed",
+    "checkout.session.async_payment_succeeded",
+    "checkout.session.async_payment_failed",
+    "checkout.session.expired",
+    "charge.refunded",
+  ]);
+  if (!supportedEvents.has(event.type)) return { received: true, ignored: true };
+
+  const object = event.data.object;
+  if (
+    typeof event.id !== "string" || !/^evt_[A-Za-z0-9]+$/.test(event.id) ||
+    event.livemode !== false ||
+    !Number.isSafeInteger(event.created) || event.created < 0 || event.created > Math.floor(Date.now() / 1000) + 300 ||
+    !isPlainObject(object)
+  ) {
+    fail(400, "invalid_stripe_event", "The payment notification is invalid.");
+  }
+  const fields = {
+    p_event_id: event.id,
+    p_event_type: event.type,
+    p_livemode: event.livemode,
+    p_payment_attempt_id: null,
+    p_checkout_session_id: null,
+    p_payment_intent_id: null,
+    p_amount_total: null,
+    p_amount_refunded_cents: null,
+    p_currency: typeof object.currency === "string" ? object.currency : null,
+    p_payment_status: typeof object.payment_status === "string" ? object.payment_status : null,
+  };
+
+  if (event.type === "charge.refunded") {
+    fields.p_payment_intent_id = stripeEventId(object.payment_intent);
+    fields.p_amount_refunded_cents = Number.isSafeInteger(object.amount_refunded) ? object.amount_refunded : null;
+    if (!fields.p_payment_intent_id || fields.p_amount_refunded_cents === null) {
+      return { received: true, ignored: true };
+    }
+  } else if (event.type.startsWith("checkout.session.")) {
+    const attemptId = object.metadata?.steadlane_payment_attempt_id || object.metadata?.payment_attempt_id;
+    const bookingId = object.metadata?.steadlane_booking_id || object.metadata?.booking_id;
+    if (!validUuid(attemptId) || !validUuid(bookingId) || typeof object.id !== "string" || !/^cs_test_[A-Za-z0-9]+$/.test(object.id)) {
+      return { received: true, ignored: true };
+    }
+    fields.p_payment_attempt_id = attemptId;
+    fields.p_checkout_session_id = object.id;
+    fields.p_payment_intent_id = stripeEventId(object.payment_intent);
+    fields.p_amount_total = Number.isSafeInteger(object.amount_total) ? object.amount_total : null;
+  }
+
+  const result = await supabaseRequest(env, "/rest/v1/rpc/process_stripe_webhook_event", {
+    method: "POST",
+    secretKey: requireSupabaseSecretKey(env),
+    body: fields,
+  });
+  if (!isPlainObject(result) || typeof result.duplicate !== "boolean" || typeof result.applied !== "boolean") {
+    fail(502, "payment_invalid_response", "The payment service returned an invalid response.");
+  }
+  if (event.type === "charge.refunded" && !result.duplicate && !result.applied) {
+    fail(503, "refund_attempt_unavailable", "The refund could not be matched to a ride yet. Stripe may retry the notification.");
+  }
+  return { received: true, duplicate: result.duplicate };
 }
 
 async function proxyMapTile(request, env, match) {
@@ -1022,11 +1443,22 @@ async function proxyMapTile(request, env, match) {
 async function handleApiRequest(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
+  if (path === "/api/stripe/webhook") {
+    if (request.method !== "POST") {
+      return jsonResponse({ error: { code: "method_not_allowed", message: "Method not allowed." } }, 405, { allow: "POST" });
+    }
+    return jsonResponse(await handleStripeWebhook(request, env));
+  }
+
   if (path === "/api/config" && request.method === "GET") {
     ensureSameOrigin(request);
     const config = currentConfig(env);
     if (!config) return jsonResponse({ error: { code: "configuration_incomplete", message: "Steadlane sign-in is not configured yet." } }, 503);
-    return jsonResponse({ supabaseUrl: config.supabaseUrl, supabasePublishableKey: config.supabasePublishableKey });
+    return jsonResponse({
+      supabaseUrl: config.supabaseUrl,
+      supabasePublishableKey: config.supabasePublishableKey,
+      stripePaymentsEnabled: stripePaymentsAreEnabled(env),
+    });
   }
 
   if (path === "/api/rates" && request.method === "GET") {
@@ -1088,6 +1520,19 @@ async function handleApiRequest(request, env) {
   if (path === "/api/bookings" && request.method === "POST") {
     const user = await requireUser(request, env);
     return jsonResponse(await createBooking(request, env, user), 201);
+  }
+
+  const checkoutMatch = /^\/api\/bookings\/([^/]+)\/checkout-session$/.exec(path);
+  if (checkoutMatch && request.method === "POST") {
+    const user = await requireUser(request, env);
+    let bookingId;
+    try {
+      bookingId = decodeURIComponent(checkoutMatch[1]);
+    } catch {
+      fail(400, "invalid_booking_id", "The ride request ID is invalid.");
+    }
+    const result = await createBookingCheckoutSession(request, env, user, bookingId);
+    return jsonResponse(result.payload, result.status);
   }
 
   const cancelMatch = /^\/api\/bookings\/([^/]+)\/cancel$/.exec(path);

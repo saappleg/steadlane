@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import test from "node:test";
 import worker from "../src/worker.js";
 
@@ -6,6 +7,8 @@ const SUPABASE_URL = "https://steadlane-test.supabase.co";
 const PUBLISHABLE_KEY = "sb_publishable_test_public_key";
 const SUPABASE_SECRET_KEY = "sb_secret_test_server_key";
 const GEOAPIFY_API_KEY = "geoapify_test_server_key";
+const STRIPE_SECRET_KEY = "sk_test_steadlane_test_worker_key_001";
+const STRIPE_WEBHOOK_SECRET = "whsec_steadlane_test_worker_secret_001";
 const USER_ID = "11111111-1111-4111-8111-111111111111";
 const USER_TOKEN = `${"a".repeat(30)}.${"b".repeat(30)}.${"c".repeat(30)}`;
 const APP_ORIGIN = "https://steadlane.example";
@@ -61,9 +64,24 @@ test("GET /api/config exposes only the public Supabase URL and publishable key",
   assert.deepEqual(payload, {
     supabaseUrl: SUPABASE_URL,
     supabasePublishableKey: PUBLISHABLE_KEY,
+    stripePaymentsEnabled: false,
   });
   assert.equal(JSON.stringify(payload).includes(SUPABASE_SECRET_KEY), false);
   assert.equal(JSON.stringify(payload).includes(GEOAPIFY_API_KEY), false);
+
+  const paymentsReady = await worker.fetch(apiRequest("/api/config"), makeEnv({
+    STRIPE_PAYMENTS_ENABLED: "true",
+    STRIPE_SECRET_KEY,
+    STRIPE_WEBHOOK_SECRET,
+  }));
+  assert.equal((await paymentsReady.json()).stripePaymentsEnabled, true);
+  const taxEnabled = await worker.fetch(apiRequest("/api/config"), makeEnv({
+    STRIPE_PAYMENTS_ENABLED: "true",
+    STRIPE_SECRET_KEY,
+    STRIPE_WEBHOOK_SECRET,
+    STRIPE_AUTOMATIC_TAX_ENABLED: "true",
+  }));
+  assert.equal((await taxEnabled.json()).stripePaymentsEnabled, false);
 });
 
 test("GET /api/rates reports the known schedule and leaves stop pricing unset", async () => {
@@ -172,8 +190,8 @@ test("route quotes use provider metrics and server rates, then store the trusted
           },
           {
             properties: pickup
-              ? { feature_type: "details", place_id: "canonical-pickup-001", formatted: "Canonical Pickup, Cincinnati", lat: 39.1, lon: -84.5 }
-              : { feature_type: "details", place_id: "canonical-destination-002", formatted: "Canonical Destination, Cincinnati", lat: 39.2, lon: -84.4 },
+              ? { feature_type: "details", place_id: "canonical-pickup-001", formatted: "Canonical Pickup, Cincinnati", lat: 39.1, lon: -84.5, country_code: "us", state_code: "OH" }
+              : { feature_type: "details", place_id: "canonical-destination-002", formatted: "Canonical Destination, Cincinnati", lat: 39.2, lon: -84.4, country_code: "us", state_code: "OH" },
           },
         ],
       });
@@ -275,8 +293,8 @@ test("anonymous route estimates work without Supabase and never persist a quote"
       return jsonResponse({
         features: [{
           properties: pickup
-            ? { feature_type: "details", place_id: "guest-pickup-001", formatted: "Guest pickup, Cincinnati", lat: 39.1, lon: -84.5 }
-            : { feature_type: "details", place_id: "guest-destination-002", formatted: "Guest destination, Cincinnati", lat: 39.2, lon: -84.4 },
+            ? { feature_type: "details", place_id: "guest-pickup-001", formatted: "Guest pickup, Cincinnati", lat: 39.1, lon: -84.5, country_code: "us", state_code: "OH" }
+            : { feature_type: "details", place_id: "guest-destination-002", formatted: "Guest destination, Cincinnati", lat: 39.2, lon: -84.4, country_code: "us", state_code: "OH" },
         }],
       });
     }
@@ -323,15 +341,15 @@ test("multi-stop route estimates preserve stops, flatten route legs, and remain 
     if (url.origin === "https://api.geoapify.com" && url.pathname === "/v2/place-details") {
       const placeId = url.searchParams.get("id");
       const places = {
-        "guest-pickup-001": { formatted: "Pickup, Cincinnati", lat: 39.1, lon: -84.5 },
-        "middle-stop-002": { formatted: "Stop, Cincinnati", lat: 39.15, lon: -84.45 },
-        "guest-destination-003": { formatted: "Destination, Cincinnati", lat: 39.2, lon: -84.4 },
+        "guest-pickup-001": { formatted: "Pickup, Cincinnati", lat: 39.1, lon: -84.5, country_code: "us", state_code: "OH" },
+        "middle-stop-002": { formatted: "Stop, Covington", lat: 39.09, lon: -84.51, country_code: "us", state_code: "US-KY" },
+        "guest-destination-003": { formatted: "Destination, Lawrenceburg", lat: 39.09, lon: -84.86, country_code: "us", state_code: "IN" },
       };
       const returnedPlaceId = placeId === "middle-stop-002" ? "canonical-middle-stop-002" : placeId;
       return jsonResponse({ features: [{ properties: { feature_type: "details", place_id: returnedPlaceId, ...places[placeId] } }] });
     }
     if (url.origin === "https://api.geoapify.com" && url.pathname === "/v1/routing") {
-      assert.equal(url.searchParams.get("waypoints"), "39.1,-84.5|39.15,-84.45|39.2,-84.4");
+      assert.equal(url.searchParams.get("waypoints"), "39.1,-84.5|39.09,-84.51|39.09,-84.86");
       assert.equal(url.searchParams.get("intermediate_waypoint_mode"), "stopover");
       return jsonResponse({
         features: [{
@@ -339,8 +357,8 @@ test("multi-stop route estimates preserve stops, flatten route legs, and remain 
           geometry: {
             type: "MultiLineString",
             coordinates: [
-              [[-84.5, 39.1], [-84.45, 39.15]],
-              [[-84.45, 39.15], [-84.4, 39.2]],
+              [[-84.5, 39.1], [-84.51, 39.09]],
+              [[-84.51, 39.09], [-84.86, 39.09]],
             ],
           },
         }],
@@ -370,8 +388,8 @@ test("multi-stop route estimates preserve stops, flatten route legs, and remain 
   assert.equal(payload.quote.route.geometry.type, "LineString");
   assert.deepEqual(payload.quote.route.geometry.coordinates, [
     [-84.5, 39.1],
-    [-84.45, 39.15],
-    [-84.4, 39.2],
+    [-84.51, 39.09],
+    [-84.86, 39.09],
   ]);
   assert.equal(payload.quote.fare.stopCount, 1);
   assert.equal(payload.quote.fare.stopCharge, null);
@@ -382,19 +400,35 @@ test("multi-stop route estimates preserve stops, flatten route legs, and remain 
   assert.equal(calls.length, 4);
 });
 
-test("public address autocomplete filters suggestions and works without Supabase config", async (t) => {
+test("public address autocomplete filters to Ohio, Kentucky, and Indiana without Supabase config", async (t) => {
+  const requests = [];
   installFetchMock(t, async (input, init = {}) => {
     const url = new URL(input);
     const headers = new Headers(init.headers);
     if (url.origin === "https://api.geoapify.com" && url.pathname === "/v1/geocode/autocomplete") {
-      assert.equal(url.searchParams.get("filter"), "rect:-84.92,38.82,-84.2,39.6");
+      requests.push(url.pathname);
+      const filter = url.searchParams.get("filter") || "";
+      assert.equal(filter, "rect:-90,36,-80,42.2|countrycode:us");
+      assert.equal(url.searchParams.get("bias"), null);
+      assert.equal(url.searchParams.get("format"), "geojson");
+      assert.equal(url.searchParams.get("limit"), "20");
       assert.equal(url.searchParams.get("apiKey"), GEOAPIFY_API_KEY);
       assert.equal(headers.has("authorization"), false);
       return jsonResponse({
         features: [
-          { properties: { place_id: "boundary-southwest-001", formatted: "Southwest edge", lat: 38.82, lon: -84.92 } },
-          { properties: { place_id: "boundary-northeast-002", formatted: "Northeast edge", lat: 39.6, lon: -84.2 } },
-          { properties: { place_id: "outside-east-003", formatted: "Outside east edge", lat: 39.2, lon: -84.19 } },
+          { properties: { place_id: "illinois-result-001", formatted: "Chicago, IL", lat: 41.88, lon: -87.63, country_code: "us", state_code: "IL" } },
+          { properties: { place_id: "west-virginia-result-002", formatted: "Wheeling, WV", lat: 40.064, lon: -80.721, country_code: "us", state_code: "WV" } },
+          { properties: { place_id: "tennessee-result-003", formatted: "Nashville, TN", lat: 36.163, lon: -86.782, country_code: "us", state_code: "TN" } },
+          { properties: { place_id: "michigan-result-004", formatted: "Detroit, MI", lat: 42.331, lon: -83.046, country_code: "us", state_code: "MI" } },
+          { properties: { place_id: "virginia-result-005", formatted: "Bristol, VA", lat: 36.596, lon: -82.188, country_code: "us", state_code: "VA" } },
+          { properties: { place_id: "pennsylvania-result-006", formatted: "Erie, PA", lat: 42.129, lon: -80.085, country_code: "us", state_code: "PA" } },
+          { properties: { place_id: "ohio-result-001", formatted: "Cincinnati, OH", lat: 39.1, lon: -84.5, country_code: "us", state_code: "OH" } },
+          { properties: { place_id: "kentucky-result-002", formatted: "Louisville, KY", lat: 38.25, lon: -85.75, country_code: "us", state_code: "US-KY" } },
+          { properties: { place_id: "indiana-result-003", formatted: "Indianapolis, IN", lat: 39.77, lon: -86.16, country_code: "us", state_code: "Indiana" } },
+          { properties: { place_id: "western-kentucky-result-004", formatted: "Paducah, KY", lat: 37.083, lon: -88.6, country_code: "us", state_code: "KY" } },
+          { properties: { place_id: "southern-kentucky-result-005", formatted: "South Fulton, KY", lat: 36.50, lon: -88.87, country_code: "us", state_code: "KY" } },
+          { properties: { place_id: "eastern-ohio-result-006", formatted: "East Liverpool, OH", lat: 40.63, lon: -80.57, country_code: "us", state_code: "OH" } },
+          { properties: { place_id: "missing-state-result-007", formatted: "Unverified address", lat: 39.1, lon: -84.5, country_code: "us" } },
         ],
       });
     }
@@ -409,9 +443,94 @@ test("public address autocomplete filters suggestions and works without Supabase
 
   assert.equal(response.status, 200);
   assert.deepEqual(payload.suggestions.map(({ placeId }) => placeId), [
-    "boundary-southwest-001",
-    "boundary-northeast-002",
+    "ohio-result-001",
+    "kentucky-result-002",
+    "indiana-result-003",
+    "western-kentucky-result-004",
+    "southern-kentucky-result-005",
+    "eastern-ohio-result-006",
   ]);
+  assert.deepEqual(requests, ["/v1/geocode/autocomplete"]);
+  for (const suggestion of payload.suggestions) {
+    assert.ok(suggestion.lat >= 36 && suggestion.lat <= 42.2);
+    assert.ok(suggestion.lon >= -90 && suggestion.lon <= -80);
+  }
+});
+
+test("an empty autocomplete does not make a second provider request while the passenger is typing", async (t) => {
+  const requests = [];
+  installFetchMock(t, async (input) => {
+    const url = new URL(input);
+    requests.push(url.pathname);
+    assert.equal(url.pathname, "/v1/geocode/autocomplete");
+    return jsonResponse({ features: [] });
+  });
+
+  const response = await worker.fetch(
+    apiRequest("/api/address?q=3214%20Goodwin%20Schoolhouse"),
+    makeEnv({ SUPABASE_URL: "", SUPABASE_PUBLISHABLE_KEY: "", SUPABASE_SECRET_KEY: undefined }),
+  );
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload.suggestions, []);
+  assert.deepEqual(requests, ["/v1/geocode/autocomplete"]);
+});
+
+test("explicit full address search uses Geoapify geocoding and keeps the state filter", async (t) => {
+  const requests = [];
+  installFetchMock(t, async (input) => {
+    const url = new URL(input);
+    requests.push(url);
+    assert.equal(url.origin, "https://api.geoapify.com");
+    assert.equal(url.searchParams.get("text"), "3214 Goodwin Schoolhouse");
+    assert.equal(url.pathname, "/v1/geocode/search");
+    assert.equal(url.searchParams.get("filter"), "rect:-90,36,-80,42.2|countrycode:us");
+    assert.equal(url.searchParams.get("format"), "geojson");
+    assert.equal(url.searchParams.get("limit"), "20");
+    assert.equal(url.searchParams.get("apiKey"), GEOAPIFY_API_KEY);
+    return jsonResponse({
+      features: [
+        {
+          properties: {
+            place_id: "goodwin-schoolhouse-result-001",
+            formatted: "3214 Goodwin Schoolhouse Road, Ohio, United States",
+            lat: 39.1,
+            lon: -84.5,
+            country_code: "us",
+            state: "Ohio",
+          },
+        },
+        {
+          properties: {
+            place_id: "outside-service-area-result-001",
+            formatted: "3214 Goodwin Schoolhouse Road, Pennsylvania, United States",
+            lat: 41.9,
+            lon: -77.7,
+            country_code: "us",
+            state_code: "PA",
+          },
+        },
+      ],
+    });
+  });
+
+  const response = await worker.fetch(
+    apiRequest("/api/address?q=3214%20Goodwin%20Schoolhouse&mode=full"),
+    makeEnv({ SUPABASE_URL: "", SUPABASE_PUBLISHABLE_KEY: "", SUPABASE_SECRET_KEY: undefined }),
+  );
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload.suggestions, [
+    {
+      placeId: "goodwin-schoolhouse-result-001",
+      label: "3214 Goodwin Schoolhouse Road, Ohio, United States",
+      lat: 39.1,
+      lon: -84.5,
+    },
+  ]);
+  assert.deepEqual(requests.map((url) => url.pathname), ["/v1/geocode/search"]);
 });
 
 test("driver availability reads and saves normalized weekly windows through the caller token", async (t) => {
@@ -656,7 +775,7 @@ test("public address, route, and map endpoints enforce their IP limiters", async
   assert.equal(upstreamCalls, 0);
 });
 
-test("route quotes reject canonical addresses outside the beta rectangle", async (t) => {
+test("route quotes reject canonical addresses outside Ohio, Kentucky, and Indiana", async (t) => {
   let routeCalls = 0;
   let quoteWrites = 0;
   installFetchMock(t, async (input, init = {}) => {
@@ -677,8 +796,8 @@ test("route quotes reject canonical addresses outside the beta rectangle", async
       return jsonResponse({
         features: [{
           properties: pickup
-            ? { feature_type: "details", place_id: "outside-place-001", formatted: "Outside service area", lat: 39.1, lon: -85 }
-            : { feature_type: "details", place_id: "inside-place-002", formatted: "Inside Cincinnati area", lat: 39.2, lon: -84.4 },
+            ? { feature_type: "details", place_id: "outside-place-001", formatted: "Chicago, IL", lat: 41.88, lon: -87.63, country_code: "us", state_code: "IL" }
+            : { feature_type: "details", place_id: "inside-place-002", formatted: "Cincinnati, OH", lat: 39.2, lon: -84.4, country_code: "us", state_code: "OH" },
         }],
       });
     }
@@ -712,4 +831,617 @@ test("route quotes reject canonical addresses outside the beta rectangle", async
   assert.equal(payload.error.code, "outside_service_area");
   assert.equal(routeCalls, 0);
   assert.equal(quoteWrites, 0);
+});
+
+test("booking creation accepts the current passenger request without a payment method", async (t) => {
+  const bookingId = "22222222-2222-4222-8222-222222222222";
+  const quoteId = "33333333-3333-4333-8333-333333333333";
+  const idempotencyKey = "44444444-4444-4444-8444-444444444444";
+  installFetchMock(t, async (input, init = {}) => {
+    const url = new URL(input);
+    const method = (init.method || "GET").toUpperCase();
+    const headers = new Headers(init.headers);
+    if (url.href === `${SUPABASE_URL}/auth/v1/user`) {
+      return jsonResponse({ id: USER_ID, email: "passenger@example.test" });
+    }
+    if (url.origin === SUPABASE_URL && url.pathname === "/rest/v1/profiles") {
+      return jsonResponse([{ id: USER_ID, role: "passenger" }]);
+    }
+    if (url.origin === SUPABASE_URL && url.pathname === "/rest/v1/rpc/create_booking_from_quote") {
+      assert.equal(method, "POST");
+      assert.equal(headers.get("authorization"), `Bearer ${USER_TOKEN}`);
+      assert.deepEqual(JSON.parse(init.body), {
+        p_quote_id: quoteId,
+        p_idempotency_key: idempotencyKey,
+      });
+      return jsonResponse({ id: bookingId, status: "pending" });
+    }
+    if (url.origin === SUPABASE_URL && url.pathname === "/rest/v1/booking_contacts") {
+      assert.equal(headers.get("authorization"), `Bearer ${USER_TOKEN}`);
+      return jsonResponse([{ booking_id: bookingId, passenger_name: "Passenger Example", passenger_phone: "+1 555 0100" }]);
+    }
+    assert.fail(`Unexpected mocked request: ${method} ${url.href}`);
+  });
+
+  const response = await worker.fetch(
+    apiRequest("/api/bookings", {
+      method: "POST",
+      headers: { authorization: `Bearer ${USER_TOKEN}` },
+      body: { quoteId, idempotencyKey },
+    }),
+    makeEnv(),
+  );
+  const payload = await response.json();
+
+  assert.equal(response.status, 201);
+  assert.equal(payload.booking.id, bookingId);
+  assert.equal(payload.booking.passenger_phone, "+1 555 0100");
+});
+
+test("passenger ride history includes only the latest RLS-visible payment status", async (t) => {
+  const firstBookingId = "22222222-2222-4222-8222-222222222222";
+  const secondBookingId = "33333333-3333-4333-8333-333333333333";
+  installFetchMock(t, async (input, init = {}) => {
+    const url = new URL(input);
+    const headers = new Headers(init.headers);
+    if (url.href === `${SUPABASE_URL}/auth/v1/user`) {
+      return jsonResponse({ id: USER_ID, email: "passenger@example.test" });
+    }
+    if (url.origin === SUPABASE_URL && url.pathname === "/rest/v1/profiles") {
+      return jsonResponse([{ id: USER_ID, role: "passenger" }]);
+    }
+    if (url.origin === SUPABASE_URL && url.pathname === "/rest/v1/bookings") {
+      return jsonResponse([{ id: firstBookingId, status: "assigned" }, { id: secondBookingId, status: "pending" }]);
+    }
+    if (url.origin === SUPABASE_URL && url.pathname === "/rest/v1/booking_contacts") {
+      return jsonResponse([]);
+    }
+    if (url.origin === SUPABASE_URL && url.pathname === "/rest/v1/booking_payment_attempts") {
+      assert.equal(headers.get("authorization"), `Bearer ${USER_TOKEN}`);
+      assert.equal(url.searchParams.get("order"), "attempt_number.desc");
+      return jsonResponse([
+        { booking_id: firstBookingId, status: "failed", attempt_number: 2 },
+        { booking_id: secondBookingId, status: "paid", attempt_number: 1 },
+        { booking_id: firstBookingId, status: "expired", attempt_number: 1 },
+      ]);
+    }
+    assert.fail(`Unexpected mocked request: ${url.href}`);
+  });
+
+  const response = await worker.fetch(
+    apiRequest("/api/bookings?limit=50", { headers: { authorization: `Bearer ${USER_TOKEN}` } }),
+    makeEnv({ STRIPE_PAYMENTS_ENABLED: "true", STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET }),
+  );
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload.bookings.map(({ id, payment_status: status }) => ({ id, status })), [
+    { id: firstBookingId, status: "failed" },
+    { id: secondBookingId, status: "paid" },
+  ]);
+});
+
+test("ride history works before the payment migration and does not query payment attempts", async (t) => {
+  const bookingId = "22222222-2222-4222-8222-222222222222";
+  installFetchMock(t, async (input) => {
+    const url = new URL(input);
+    if (url.href === `${SUPABASE_URL}/auth/v1/user`) {
+      return jsonResponse({ id: USER_ID, email: "passenger@example.test" });
+    }
+    if (url.origin === SUPABASE_URL && url.pathname === "/rest/v1/profiles") {
+      return jsonResponse([{ id: USER_ID, role: "passenger" }]);
+    }
+    if (url.origin === SUPABASE_URL && url.pathname === "/rest/v1/bookings") {
+      return jsonResponse([{ id: bookingId, status: "assigned" }]);
+    }
+    if (url.origin === SUPABASE_URL && url.pathname === "/rest/v1/booking_contacts") {
+      return jsonResponse([]);
+    }
+    assert.fail(`Payment attempts must not be queried while the feature is disabled: ${url.href}`);
+  });
+
+  const response = await worker.fetch(
+    apiRequest("/api/bookings", { headers: { authorization: `Bearer ${USER_TOKEN}` } }),
+    makeEnv(),
+  );
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.bookings[0].id, bookingId);
+});
+
+test("accepted ride Checkout uses its stored fare and saves the test session server-side", async (t) => {
+  const bookingId = "22222222-2222-4222-8222-222222222222";
+  const paymentAttemptId = "77777777-7777-4777-8777-777777777777";
+  const checkoutSessionId = "cs_test_steadlanecheckout001";
+  const calls = [];
+  installFetchMock(t, async (input, init = {}) => {
+    const url = new URL(input);
+    const method = (init.method || "GET").toUpperCase();
+    const headers = new Headers(init.headers);
+    calls.push({ url, method, headers, body: init.body });
+
+    if (url.href === `${SUPABASE_URL}/auth/v1/user`) {
+      assert.equal(headers.get("authorization"), `Bearer ${USER_TOKEN}`);
+      return jsonResponse({ id: USER_ID, email: "passenger@example.test" });
+    }
+    if (url.origin === SUPABASE_URL && url.pathname === "/rest/v1/profiles") {
+      assert.equal(headers.get("authorization"), `Bearer ${USER_TOKEN}`);
+      return jsonResponse([{ id: USER_ID, role: "passenger" }]);
+    }
+    if (url.origin === SUPABASE_URL && url.pathname === "/rest/v1/rpc/prepare_booking_checkout") {
+      assert.equal(method, "POST");
+      assert.equal(headers.get("authorization"), `Bearer ${USER_TOKEN}`);
+      assert.deepEqual(JSON.parse(init.body), { p_booking_id: bookingId });
+      return jsonResponse({
+        payment_attempt_id: paymentAttemptId,
+        payment_status: "pending",
+        amount_cents: 2_800,
+        currency: "usd",
+        pickup_at: "2027-01-15T16:30:00.000Z",
+        checkout_session_id: null,
+        checkout_url: null,
+        checkout_expires_at: null,
+      });
+    }
+    if (url.origin === "https://api.stripe.com" && url.pathname === "/v1/checkout/sessions") {
+      assert.equal(method, "POST");
+      assert.equal(headers.get("authorization"), `Bearer ${STRIPE_SECRET_KEY}`);
+      const fields = new URLSearchParams(init.body);
+      assert.equal(fields.get("line_items[0][price_data][unit_amount]"), "2800");
+      assert.equal(fields.get("metadata[steadlane_booking_id]"), bookingId);
+      assert.equal(fields.get("metadata[steadlane_payment_attempt_id]"), paymentAttemptId);
+      assert.match(fields.get("success_url"), /\?checkout=return&booking_id=/);
+      assert.equal(fields.get("cancel_url"), fields.get("success_url"));
+      return jsonResponse({
+        id: checkoutSessionId,
+        url: `https://checkout.stripe.com/c/pay/${checkoutSessionId}`,
+        status: "open",
+        payment_status: "unpaid",
+        livemode: false,
+        expires_at: Math.floor(Date.now() / 1000) + 1_800,
+      });
+    }
+    if (url.origin === SUPABASE_URL && url.pathname === "/rest/v1/rpc/record_booking_checkout_session") {
+      assert.equal(method, "POST");
+      assert.equal(headers.get("apikey"), SUPABASE_SECRET_KEY);
+      assert.equal(headers.has("authorization"), false);
+      const body = JSON.parse(init.body);
+      assert.equal(body.p_payment_attempt_id, paymentAttemptId);
+      assert.equal(body.p_checkout_session_id, checkoutSessionId);
+      assert.equal(body.p_checkout_url, `https://checkout.stripe.com/c/pay/${checkoutSessionId}`);
+      assert.ok(Number.isFinite(Date.parse(body.p_checkout_expires_at)));
+      return jsonResponse({ recorded: true, payment_status: "pending" });
+    }
+    assert.fail(`Unexpected mocked request: ${method} ${url.href}`);
+  });
+
+  const response = await worker.fetch(
+    apiRequest(`/api/bookings/${bookingId}/checkout-session`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${USER_TOKEN}` },
+      body: {},
+    }),
+    makeEnv({ STRIPE_PAYMENTS_ENABLED: "true", STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET }),
+  );
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload, {
+    url: `https://checkout.stripe.com/c/pay/${checkoutSessionId}`,
+    paymentStatus: "pending",
+  });
+  assert.equal(calls.filter((call) => call.url.origin === "https://api.stripe.com").length, 1);
+  assert.equal(calls.filter((call) => call.url.pathname === "/rest/v1/rpc/record_booking_checkout_session").length, 1);
+});
+
+test("Checkout retry replaces an expired unlinked session after its first database write failed", async (t) => {
+  const bookingId = "22222222-2222-4222-8222-222222222222";
+  const firstAttemptId = "77777777-7777-4777-8777-777777777777";
+  const retryAttemptId = "88888888-8888-4888-8888-888888888888";
+  const expiredSessionId = "cs_test_steadlaneexpired001";
+  const replacementSessionId = "cs_test_steadlanereplacement001";
+  const expiredUrl = `https://checkout.stripe.com/c/pay/${expiredSessionId}`;
+  const replacementUrl = `https://checkout.stripe.com/c/pay/${replacementSessionId}`;
+  const calls = [];
+  let prepareCalls = 0;
+  let stripeSessionCalls = 0;
+  let stripeExpireCalls = 0;
+  let recordCalls = 0;
+  let unlinkedExpiryCalls = 0;
+
+  installFetchMock(t, async (input, init = {}) => {
+    const url = new URL(input);
+    const method = (init.method || "GET").toUpperCase();
+    const headers = new Headers(init.headers);
+    calls.push({ url, method, headers, body: init.body });
+
+    if (url.href === `${SUPABASE_URL}/auth/v1/user`) {
+      return jsonResponse({ id: USER_ID, email: "passenger@example.test" });
+    }
+    if (url.origin === SUPABASE_URL && url.pathname === "/rest/v1/profiles") {
+      return jsonResponse([{ id: USER_ID, role: "passenger" }]);
+    }
+    if (url.origin === SUPABASE_URL && url.pathname === "/rest/v1/rpc/prepare_booking_checkout") {
+      prepareCalls += 1;
+      assert.equal(headers.get("authorization"), `Bearer ${USER_TOKEN}`);
+      assert.deepEqual(JSON.parse(init.body), { p_booking_id: bookingId });
+      const paymentAttemptId = prepareCalls < 3 ? firstAttemptId : retryAttemptId;
+      assert.ok(prepareCalls <= 3, "Checkout must not retry indefinitely");
+      return jsonResponse({
+        payment_attempt_id: paymentAttemptId,
+        payment_status: "pending",
+        amount_cents: 2_800,
+        currency: "usd",
+        pickup_at: "2027-01-15T16:30:00.000Z",
+        checkout_session_id: null,
+        checkout_url: null,
+        checkout_expires_at: null,
+      });
+    }
+    if (url.origin === "https://api.stripe.com" && url.pathname === "/v1/checkout/sessions") {
+      stripeSessionCalls += 1;
+      const idempotencyKey = headers.get("idempotency-key");
+      if (stripeSessionCalls < 3) assert.equal(idempotencyKey, `steadlane-${firstAttemptId}`);
+      else assert.equal(idempotencyKey, `steadlane-${retryAttemptId}`);
+      if (stripeSessionCalls === 1) {
+        return jsonResponse({
+          id: expiredSessionId,
+          url: expiredUrl,
+          status: "open",
+          payment_status: "unpaid",
+          livemode: false,
+          expires_at: Math.floor(Date.now() / 1000) + 1_800,
+        });
+      }
+      if (stripeSessionCalls === 2) {
+        return jsonResponse({
+          id: expiredSessionId,
+          url: expiredUrl,
+          status: "expired",
+          payment_status: "unpaid",
+          livemode: false,
+          expires_at: Math.floor(Date.now() / 1000) - 60,
+        });
+      }
+      return jsonResponse({
+        id: replacementSessionId,
+        url: replacementUrl,
+        status: "open",
+        payment_status: "unpaid",
+        livemode: false,
+        expires_at: Math.floor(Date.now() / 1000) + 1_800,
+      });
+    }
+    if (
+      url.origin === "https://api.stripe.com" &&
+      url.pathname === `/v1/checkout/sessions/${expiredSessionId}/expire`
+    ) {
+      stripeExpireCalls += 1;
+      return jsonResponse({
+        id: expiredSessionId,
+        url: expiredUrl,
+        status: "expired",
+        payment_status: "unpaid",
+        livemode: false,
+        expires_at: Math.floor(Date.now() / 1000) - 60,
+      });
+    }
+    if (url.origin === SUPABASE_URL && url.pathname === "/rest/v1/rpc/record_booking_checkout_session") {
+      recordCalls += 1;
+      assert.equal(headers.get("apikey"), SUPABASE_SECRET_KEY);
+      assert.equal(headers.has("authorization"), false);
+      const body = JSON.parse(init.body);
+      assert.equal(body.p_payment_attempt_id, recordCalls === 1 ? firstAttemptId : retryAttemptId);
+      if (recordCalls === 1) {
+        assert.equal(body.p_checkout_session_id, expiredSessionId);
+        assert.equal(body.p_checkout_url, expiredUrl);
+        return jsonResponse({ message: "Temporary payment record write failure." }, 503);
+      }
+      assert.equal(body.p_checkout_session_id, replacementSessionId);
+      assert.equal(body.p_checkout_url, replacementUrl);
+      return jsonResponse({ recorded: true });
+    }
+    if (url.origin === SUPABASE_URL && url.pathname === "/rest/v1/rpc/expire_unlinked_booking_checkout_attempt") {
+      unlinkedExpiryCalls += 1;
+      assert.equal(headers.get("apikey"), SUPABASE_SECRET_KEY);
+      assert.equal(headers.has("authorization"), false);
+      assert.deepEqual(JSON.parse(init.body), { p_payment_attempt_id: firstAttemptId });
+      return jsonResponse({ expired: true, payment_status: "expired" });
+    }
+    assert.fail(`Unexpected mocked request: ${method} ${url.href}`);
+  });
+
+  const env = makeEnv({ STRIPE_PAYMENTS_ENABLED: "true", STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET });
+  const firstResponse = await worker.fetch(
+    apiRequest(`/api/bookings/${bookingId}/checkout-session`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${USER_TOKEN}` },
+      body: {},
+    }),
+    env,
+  );
+  assert.ok(firstResponse.status >= 500, "A failed Checkout record write must not return a payment link");
+
+  const retryResponse = await worker.fetch(
+    apiRequest(`/api/bookings/${bookingId}/checkout-session`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${USER_TOKEN}` },
+      body: {},
+    }),
+    env,
+  );
+  const retryPayload = await retryResponse.json();
+
+  assert.equal(retryResponse.status, 200);
+  assert.deepEqual(retryPayload, { url: replacementUrl, paymentStatus: "pending" });
+  assert.notEqual(retryPayload.url, expiredUrl);
+  assert.equal(prepareCalls, 3);
+  assert.equal(stripeSessionCalls, 3);
+  assert.equal(recordCalls, 2);
+  assert.equal(unlinkedExpiryCalls, 1);
+  assert.equal(stripeExpireCalls, 0);
+});
+
+test("Checkout rejects client-supplied amounts and does not call Stripe", async (t) => {
+  const bookingId = "22222222-2222-4222-8222-222222222222";
+  let stripeCalls = 0;
+  installFetchMock(t, async (input) => {
+    const url = new URL(input);
+    if (url.href === `${SUPABASE_URL}/auth/v1/user`) {
+      return jsonResponse({ id: USER_ID, email: "passenger@example.test" });
+    }
+    if (url.origin === SUPABASE_URL && url.pathname === "/rest/v1/profiles") {
+      return jsonResponse([{ id: USER_ID, role: "passenger" }]);
+    }
+    if (url.origin === "https://api.stripe.com") stripeCalls += 1;
+    assert.fail(`Unexpected request: ${url.href}`);
+  });
+
+  const response = await worker.fetch(
+    apiRequest(`/api/bookings/${bookingId}/checkout-session`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${USER_TOKEN}` },
+      body: { amount: 1, currency: "usd" },
+    }),
+    makeEnv({ STRIPE_SECRET_KEY }),
+  );
+  const payload = await response.json();
+
+  assert.equal(response.status, 400);
+  assert.equal(payload.error.code, "invalid_checkout_request");
+  assert.equal(stripeCalls, 0);
+});
+
+test("Checkout stays unavailable until test payments, storage, and webhook secrets are configured", async (t) => {
+  let bookingPreparationCalls = 0;
+  installFetchMock(t, async (input) => {
+    const url = new URL(input);
+    if (url.href === `${SUPABASE_URL}/auth/v1/user`) {
+      return jsonResponse({ id: USER_ID, email: "passenger@example.test" });
+    }
+    if (url.origin === SUPABASE_URL && url.pathname === "/rest/v1/profiles") {
+      return jsonResponse([{ id: USER_ID, role: "passenger" }]);
+    }
+    if (url.pathname === "/rest/v1/rpc/prepare_booking_checkout") bookingPreparationCalls += 1;
+    assert.fail(`Unexpected request: ${url.href}`);
+  });
+
+  const response = await worker.fetch(
+    apiRequest("/api/bookings/22222222-2222-4222-8222-222222222222/checkout-session", {
+      method: "POST",
+      headers: { authorization: `Bearer ${USER_TOKEN}` },
+      body: {},
+    }),
+    makeEnv({ STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET }),
+  );
+  const payload = await response.json();
+
+  assert.equal(response.status, 503);
+  assert.equal(payload.error.code, "stripe_not_configured");
+  assert.equal(bookingPreparationCalls, 0);
+});
+
+test("Stripe webhook verifies the signature and records a paid session through the server RPC", async (t) => {
+  const paymentAttemptId = "77777777-7777-4777-8777-777777777777";
+  const checkoutSessionId = "cs_test_steadlanecheckout001";
+  const calls = [];
+  installFetchMock(t, async (input, init = {}) => {
+    const url = new URL(input);
+    const method = (init.method || "GET").toUpperCase();
+    const headers = new Headers(init.headers);
+    calls.push({ url, method, headers, body: init.body });
+    assert.equal(url.origin, SUPABASE_URL);
+    assert.equal(url.pathname, "/rest/v1/rpc/process_stripe_webhook_event");
+    assert.equal(method, "POST");
+    assert.equal(headers.get("apikey"), SUPABASE_SECRET_KEY);
+    assert.equal(headers.has("authorization"), false);
+    assert.deepEqual(JSON.parse(init.body), {
+      p_event_id: "evt_steadlanepaid001",
+      p_event_type: "checkout.session.completed",
+      p_livemode: false,
+      p_payment_attempt_id: paymentAttemptId,
+      p_checkout_session_id: checkoutSessionId,
+      p_payment_intent_id: "pi_steadlane001",
+      p_amount_total: 2_800,
+      p_amount_refunded_cents: null,
+      p_currency: "usd",
+      p_payment_status: "paid",
+    });
+    return jsonResponse({ duplicate: false, applied: true, payment_status: "paid" });
+  });
+
+  const event = {
+    id: "evt_steadlanepaid001",
+    type: "checkout.session.completed",
+    created: Math.floor(Date.now() / 1000),
+    livemode: false,
+    data: {
+      object: {
+        id: checkoutSessionId,
+        metadata: {
+          steadlane_booking_id: "22222222-2222-4222-8222-222222222222",
+          steadlane_payment_attempt_id: paymentAttemptId,
+        },
+        payment_intent: "pi_steadlane001",
+        amount_total: 2_800,
+        currency: "usd",
+        payment_status: "paid",
+      },
+    },
+  };
+  const rawBody = JSON.stringify(event);
+  const timestamp = Math.floor(Date.now() / 1000);
+  const signature = createHmac("sha256", STRIPE_WEBHOOK_SECRET)
+    .update(`${timestamp}.${rawBody}`, "utf8")
+    .digest("hex");
+  const request = new Request(`${APP_ORIGIN}/api/stripe/webhook`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "stripe-signature": `t=${timestamp},v1=${signature}`,
+    },
+    body: rawBody,
+  });
+
+  const response = await worker.fetch(request, makeEnv({
+    STRIPE_WEBHOOK_SECRET,
+    SUPABASE_SECRET_KEY,
+  }));
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload, { received: true, duplicate: false });
+  assert.equal(calls.length, 1);
+});
+
+test("Stripe refund webhooks send the cumulative refund amount to the server RPC", async (t) => {
+  const paymentIntentId = "pi_steadlane001";
+  installFetchMock(t, async (input, init = {}) => {
+    const url = new URL(input);
+    const headers = new Headers(init.headers);
+    assert.equal(url.origin, SUPABASE_URL);
+    assert.equal(url.pathname, "/rest/v1/rpc/process_stripe_webhook_event");
+    assert.equal(headers.get("apikey"), SUPABASE_SECRET_KEY);
+    assert.deepEqual(JSON.parse(init.body), {
+      p_event_id: "evt_steadlanerefund001",
+      p_event_type: "charge.refunded",
+      p_livemode: false,
+      p_payment_attempt_id: null,
+      p_checkout_session_id: null,
+      p_payment_intent_id: paymentIntentId,
+      p_amount_total: null,
+      p_amount_refunded_cents: 1_400,
+      p_currency: "usd",
+      p_payment_status: null,
+    });
+    return jsonResponse({ duplicate: false, applied: true, payment_status: "partially_refunded" });
+  });
+
+  const event = {
+    id: "evt_steadlanerefund001",
+    type: "charge.refunded",
+    created: Math.floor(Date.now() / 1000),
+    livemode: false,
+    data: {
+      object: {
+        id: "ch_steadlane001",
+        payment_intent: paymentIntentId,
+        amount_refunded: 1_400,
+        currency: "usd",
+      },
+    },
+  };
+  const rawBody = JSON.stringify(event);
+  const timestamp = Math.floor(Date.now() / 1000);
+  const signature = createHmac("sha256", STRIPE_WEBHOOK_SECRET)
+    .update(`${timestamp}.${rawBody}`, "utf8")
+    .digest("hex");
+  const response = await worker.fetch(new Request(`${APP_ORIGIN}/api/stripe/webhook`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "stripe-signature": `t=${timestamp},v1=${signature}`,
+    },
+    body: rawBody,
+  }), makeEnv({ STRIPE_WEBHOOK_SECRET, SUPABASE_SECRET_KEY }));
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload, { received: true, duplicate: false });
+});
+
+test("a valid unmatched refund remains retryable by Stripe", async (t) => {
+  const paymentIntentId = "pi_steadlaneunmatched001";
+  let rpcCalls = 0;
+  installFetchMock(t, async (input, init = {}) => {
+    rpcCalls += 1;
+    const url = new URL(input);
+    const headers = new Headers(init.headers);
+    assert.equal(url.origin, SUPABASE_URL);
+    assert.equal(url.pathname, "/rest/v1/rpc/process_stripe_webhook_event");
+    assert.equal(headers.get("apikey"), SUPABASE_SECRET_KEY);
+    assert.equal(headers.has("authorization"), false);
+    const body = JSON.parse(init.body);
+    assert.equal(body.p_event_type, "charge.refunded");
+    assert.equal(body.p_payment_intent_id, paymentIntentId);
+    assert.equal(body.p_amount_refunded_cents, 1_400);
+    return jsonResponse({ duplicate: false, applied: false });
+  });
+
+  const event = {
+    id: "evt_steadlaneunmatched001",
+    type: "charge.refunded",
+    created: Math.floor(Date.now() / 1000),
+    livemode: false,
+    data: {
+      object: {
+        id: "ch_steadlaneunmatched001",
+        payment_intent: paymentIntentId,
+        amount_refunded: 1_400,
+        currency: "usd",
+      },
+    },
+  };
+  const rawBody = JSON.stringify(event);
+  const timestamp = Math.floor(Date.now() / 1000);
+  const signature = createHmac("sha256", STRIPE_WEBHOOK_SECRET)
+    .update(`${timestamp}.${rawBody}`, "utf8")
+    .digest("hex");
+  const response = await worker.fetch(new Request(`${APP_ORIGIN}/api/stripe/webhook`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "stripe-signature": `t=${timestamp},v1=${signature}`,
+    },
+    body: rawBody,
+  }), makeEnv({ STRIPE_WEBHOOK_SECRET, SUPABASE_SECRET_KEY }));
+  const payload = await response.json();
+
+  assert.equal(rpcCalls, 1);
+  assert.ok(response.status >= 500 && response.status < 600);
+  assert.equal(payload.error.code, "refund_attempt_unavailable");
+});
+
+test("Stripe webhook rejects forged signatures before contacting Supabase", async (t) => {
+  let upstreamCalls = 0;
+  installFetchMock(t, async () => {
+    upstreamCalls += 1;
+    throw new Error("Forged payment notifications must not reach the database.");
+  });
+  const request = new Request(`${APP_ORIGIN}/api/stripe/webhook`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "stripe-signature": `t=${Math.floor(Date.now() / 1000)},v1=${"0".repeat(64)}`,
+    },
+    body: JSON.stringify({ id: "evt_forged001", type: "checkout.session.completed", livemode: false, data: { object: {} } }),
+  });
+
+  const response = await worker.fetch(request, makeEnv({ STRIPE_WEBHOOK_SECRET }));
+  const payload = await response.json();
+
+  assert.equal(response.status, 400);
+  assert.equal(payload.error.code, "invalid_stripe_signature");
+  assert.equal(upstreamCalls, 0);
 });

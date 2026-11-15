@@ -247,7 +247,7 @@
                       placeholder="Street address, terminal, or landmark"
                       required
                     >
-                    <p id="pickup-help" class="input-hint">Choose a matching address from the suggestions.</p>
+                    <p id="pickup-help" class="input-hint">Choose from the suggestions. Pickup, stops, and destination must be in Ohio, Kentucky, or Indiana.</p>
                     <ul id="pickup-options" class="suggestion-list" role="listbox" aria-label="Pickup suggestions" hidden></ul>
                   </div>
 
@@ -481,7 +481,7 @@
                   <button id="signin-to-request-button" class="button button--primary button--full" type="button" data-action="signin">Sign in to request this ride</button>
                   <button id="request-ride-button" class="button button--primary button--full" type="button" data-action="request-ride" disabled hidden>Request this ride</button>
                   <button id="request-recurring-button" class="button button--primary button--full" type="button" data-action="request-recurring" disabled hidden>Request weekly rides</button>
-                  <p id="request-ride-note" class="input-hint">Requesting a ride does not charge a payment method. Each weekly date is a separate request.</p>
+                  <p id="request-ride-note" class="input-hint" role="status" aria-live="polite">No payment is taken when you send a request. Card Checkout is available in test mode only after a driver accepts.</p>
                 </div>
 
                 <div id="booking-status" class="booking-status" aria-live="polite" tabindex="-1" hidden>
@@ -493,12 +493,16 @@
                   <section id="booking-requested" class="booking-state" aria-labelledby="booking-requested-heading" hidden>
                     <p class="step-label">Request sent</p>
                     <h3 id="booking-requested-heading">Waiting for a driver</h3>
-                    <p>Your request is waiting for a driver to accept.</p>
+                    <p id="booking-requested-description">Your request is waiting for a driver to accept.</p>
                   </section>
                   <section id="booking-accepted" class="booking-state booking-state--success" aria-labelledby="booking-accepted-heading" hidden>
                     <p class="step-label">Ride confirmed</p>
                     <h3 id="booking-accepted-heading">A driver accepted your ride</h3>
                     <p id="booking-driver-details"></p>
+                    <p id="booking-accepted-payment-status" class="form-status" role="status" aria-live="polite"></p>
+                    <button id="pay-for-ride-button" class="button button--primary" type="button" data-action="pay-for-ride" hidden>Pay by card (test mode)</button>
+                    <p id="checkout-feedback" class="form-status" role="status" aria-live="polite"></p>
+                    <p id="checkout-error" class="form-error" role="alert" hidden></p>
                   </section>
                   <section id="booking-declined" class="booking-state booking-state--error" aria-labelledby="booking-declined-heading" hidden>
                     <p class="step-label">Request update</p>
@@ -536,6 +540,9 @@
                 <div class="history-item__fare">
                   <p data-history-status></p>
                   <p data-history-total></p>
+                  <p data-history-payment></p>
+                  <button class="button button--primary" type="button" data-history-pay hidden>Pay by card (test mode)</button>
+                  <p data-history-payment-feedback role="status" aria-live="polite" hidden></p>
                   <button class="button button--quiet history-series-cancel" type="button" data-history-cancel-series hidden>Cancel future weekly requests</button>
                   <p class="history-series-feedback" data-history-series-feedback role="status" aria-live="polite" hidden></p>
                 </div>

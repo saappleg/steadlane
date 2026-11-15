@@ -40,6 +40,7 @@ const requestRideButton = $("#request-ride-button");
 const bookingStatus = $("#booking-status");
 const bookingStatusMessage = $("#booking-status-message");
 const cancelRideButton = $("#cancel-ride-button");
+const payForRideButton = $("#pay-for-ride-button");
 const routeMapElement = $("#route-map");
 const mapLoading = $("#map-loading");
 const mapError = $("#map-error");
@@ -52,9 +53,18 @@ const autocomplete = Object.fromEntries(addressKinds.map((kind) => [kind, {
   controller: null,
   suggestions: [],
   activeIndex: -1,
+  fullAddressAvailable: false,
+  fullAddressSearching: false,
+  searching: false,
+  requestSequence: 0,
 }]));
 
 const currencyFormatters = new Map();
+const checkoutReturnParams = new URLSearchParams(window.location.search);
+const checkoutReturnBookingId = checkoutReturnParams.get("checkout") === "return"
+  ? checkoutReturnParams.get("booking_id")
+  : null;
+const historyBookings = new Map();
 let authClient = null;
 let bookingApi = null;
 let routeMap = null;
@@ -76,7 +86,10 @@ let isSavingAvailability = false;
 let isRequestingRecurring = false;
 let signedInRole = null;
 let authSetupError = "";
+let stripePaymentsEnabled = false;
 let currentRecurringSeries = null;
+let activeCheckoutBookingId = null;
+let checkoutReturnHandled = false;
 
 function text(selector, value) {
   const element = $(selector);
@@ -220,8 +233,11 @@ function showPublicPlanner(message = "") {
 
 function clearPassengerSessionState() {
   currentBooking = null;
+  historyBookings.clear();
+  activeCheckoutBookingId = null;
   bookingStatus.hidden = true;
   bookingStatusMessage.textContent = "";
+  payForRideButton.hidden = true;
 }
 
 function showPassengerPanel(name) {
@@ -370,13 +386,20 @@ function clearAutocomplete(kind) {
   const input = addressInput(kind);
   const list = addressList(kind);
   const state = autocomplete[kind];
+  clearTimeout(state.timer);
+  state.timer = null;
+  state.requestSequence += 1;
   state.controller?.abort();
   state.controller = null;
   state.suggestions = [];
   state.activeIndex = -1;
+  state.fullAddressAvailable = false;
+  state.fullAddressSearching = false;
+  state.searching = false;
   list.replaceChildren();
   list.hidden = true;
   input.setAttribute("aria-expanded", "false");
+  input.removeAttribute("aria-busy");
   input.removeAttribute("aria-activedescendant");
 }
 
@@ -413,6 +436,7 @@ function renderSuggestions(kind, suggestions) {
   const state = autocomplete[kind];
   state.suggestions = suggestions;
   state.activeIndex = -1;
+  state.fullAddressAvailable = false;
   list.replaceChildren();
 
   suggestions.forEach((suggestion, index) => {
@@ -429,8 +453,18 @@ function renderSuggestions(kind, suggestions) {
   input.setAttribute("aria-expanded", String(suggestions.length > 0));
   input.removeAttribute("aria-activedescendant");
   if (suggestions.length) {
-    routeStatus.textContent = `${suggestions.length} address suggestions. Use the arrow keys to choose one.`;
+    setAddressStatus(kind, `${suggestions.length} address suggestions. Use the arrow keys to choose one.`);
   }
+}
+
+function setAddressStatus(kind, message) {
+  if (document.activeElement === addressInput(kind)) routeStatus.textContent = message;
+}
+
+function isCurrentAddressSearch(kind, query, requestSequence, controller) {
+  return !controller.signal.aborted &&
+    autocomplete[kind].requestSequence === requestSequence &&
+    addressInput(kind).value.trim() === query;
 }
 
 function selectSuggestion(kind, index) {
@@ -460,28 +494,33 @@ function queueAddressSearch(kind) {
   input.setCustomValidity("");
   input.removeAttribute("aria-invalid");
   clearAutocomplete(kind);
+  const requestSequence = state.requestSequence;
   invalidateRouteAndQuote("Trip details changed. Get a new route and fare before requesting a ride.");
 
   if (!query) {
-    routeStatus.textContent = "";
+    setAddressStatus(kind, "");
     return;
   }
   if (!bookingApi) {
-    routeStatus.textContent = "Address search is not configured yet. Try again later.";
+    setAddressStatus(kind, "Address search is not configured yet. Try again later.");
     return;
   }
   if (query.length < 3) {
-    routeStatus.textContent = "Enter at least three characters to search for an address.";
+    setAddressStatus(kind, "Enter at least three characters to search for an address.");
     return;
   }
 
-  routeStatus.textContent = "Searching for addresses…";
+  state.searching = true;
+  input.setAttribute("aria-busy", "true");
+  setAddressStatus(kind, "Searching for addresses…");
   state.timer = window.setTimeout(async () => {
+    state.timer = null;
+    if (state.requestSequence !== requestSequence || input.value.trim() !== query) return;
     const controller = new AbortController();
     state.controller = controller;
     try {
       const result = await bookingApi.searchAddresses(query, { signal: controller.signal });
-      if (controller.signal.aborted || input.value.trim() !== query) return;
+      if (!isCurrentAddressSearch(kind, query, requestSequence, controller)) return;
       const suggestions = Array.isArray(result?.suggestions)
         ? result.suggestions.filter((item) =>
             typeof item?.label === "string" &&
@@ -489,14 +528,84 @@ function queueAddressSearch(kind) {
             item.placeId.trim().length > 0,
           )
         : [];
+      state.searching = false;
+      input.removeAttribute("aria-busy");
       renderSuggestions(kind, suggestions);
-      if (!suggestions.length) routeStatus.textContent = "No matching addresses. Try a nearby street or place name.";
-    } catch (error) {
-      if (controller.signal.aborted) return;
-      routeStatus.textContent = errorMessage(error, "Address search is unavailable. Try again.");
+      if (!suggestions.length) {
+        state.fullAddressAvailable = true;
+        setAddressStatus(kind, "No quick matches. Press Enter to search the full address.");
+      }
+    } catch {
+      if (!isCurrentAddressSearch(kind, query, requestSequence, controller)) return;
+      state.searching = false;
+      input.removeAttribute("aria-busy");
+      state.fullAddressAvailable = true;
+      setAddressStatus(kind, "Quick address search is unavailable. Press Enter to search the full address.");
       closeAutocomplete(kind);
+    } finally {
+      if (state.requestSequence === requestSequence && state.controller === controller) {
+        state.controller = null;
+      }
     }
   }, 300);
+}
+
+async function searchFullAddress(kind, { force = false } = {}) {
+  const input = addressInput(kind);
+  const state = autocomplete[kind];
+  const query = input.value.trim();
+  if ((!force && !state.fullAddressAvailable) || state.fullAddressSearching || query.length < 3 || !bookingApi) return;
+
+  clearTimeout(state.timer);
+  state.timer = null;
+  state.requestSequence += 1;
+  const requestSequence = state.requestSequence;
+  state.controller?.abort();
+  state.fullAddressAvailable = false;
+  state.fullAddressSearching = true;
+  state.searching = false;
+  input.setAttribute("aria-busy", "true");
+  state.suggestions = [];
+  state.activeIndex = -1;
+  const list = addressList(kind);
+  list.replaceChildren();
+  list.hidden = true;
+  input.setAttribute("aria-expanded", "false");
+  input.removeAttribute("aria-activedescendant");
+  const controller = new AbortController();
+  state.controller = controller;
+  setAddressStatus(kind, "Searching the full address…");
+
+  try {
+    const result = await bookingApi.searchAddresses(query, {
+      signal: controller.signal,
+      fullAddress: true,
+    });
+    if (!isCurrentAddressSearch(kind, query, requestSequence, controller)) return;
+    const suggestions = Array.isArray(result?.suggestions)
+      ? result.suggestions.filter((item) =>
+          typeof item?.label === "string" &&
+          typeof item?.placeId === "string" &&
+          item.placeId.trim().length > 0,
+        )
+      : [];
+    renderSuggestions(kind, suggestions);
+    if (!suggestions.length) {
+      state.fullAddressAvailable = true;
+      setAddressStatus(kind, "No matching addresses. Add the city, state, or ZIP code and press Enter to search again.");
+    }
+  } catch (error) {
+    if (!isCurrentAddressSearch(kind, query, requestSequence, controller)) return;
+    state.fullAddressAvailable = true;
+    setAddressStatus(kind, `${errorMessage(error, "Full address search is unavailable.")} Press Enter to try again.`);
+    closeAutocomplete(kind);
+  } finally {
+    if (state.requestSequence === requestSequence && state.controller === controller) {
+      state.controller = null;
+      state.fullAddressSearching = false;
+      input.removeAttribute("aria-busy");
+    }
+  }
 }
 
 function setupAutocomplete(kind) {
@@ -517,6 +626,18 @@ function setupAutocomplete(kind) {
     } else if (event.key === "Enter" && state.activeIndex >= 0 && !list.hidden) {
       event.preventDefault();
       selectSuggestion(kind, state.activeIndex);
+    } else if (event.key === "Enter" && !list.hidden && state.suggestions.length) {
+      event.preventDefault();
+      selectSuggestion(kind, state.activeIndex >= 0 ? state.activeIndex : 0);
+    } else if (event.key === "Enter" && state.fullAddressSearching) {
+      event.preventDefault();
+    } else if (
+      event.key === "Enter" &&
+      (state.fullAddressAvailable || state.searching) &&
+      input.value.trim().length >= 3
+    ) {
+      event.preventDefault();
+      void searchFullAddress(kind, { force: true });
     } else if (event.key === "Escape" && !list.hidden) {
       event.preventDefault();
       closeAutocomplete(kind);
@@ -625,6 +746,10 @@ function clearBookingStatus() {
   bookingStatus.hidden = true;
   bookingStatusMessage.textContent = "";
   cancelRideButton.hidden = true;
+  payForRideButton.hidden = true;
+  text("#booking-accepted-payment-status", "");
+  text("#checkout-feedback", "");
+  hidden("#checkout-error", true);
   $("#recurring-booking-state").hidden = true;
   for (const state of ["requested", "accepted", "declined", "cancelled"]) {
     hidden(`#booking-${state}`, true);
@@ -709,6 +834,7 @@ function hasUnpricedStops(quote) {
 function updateQuoteActions(quote) {
   const signedInPassenger = signedInRole === "passenger";
   const recurring = $("#repeat-weekly-toggle").checked;
+  updateRequestPaymentCopy();
   const validFare = Boolean(
     quoteAllowsBooking(quote) &&
       quote.id &&
@@ -720,6 +846,7 @@ function updateQuoteActions(quote) {
   $("#signin-to-request-button").hidden = signedInPassenger;
   $("#signin-to-request-button").disabled = Boolean(authSetupError) || !authClient || !navigator.onLine;
   requestRideButton.hidden = !signedInPassenger || recurring;
+  requestRideButton.textContent = "Request this ride";
   requestRideButton.disabled = !signedInPassenger || !validFare || !navigator.onLine || hasSubmittedRide;
   $("#request-recurring-button").hidden = !signedInPassenger || !recurring;
   $("#request-recurring-button").disabled = !signedInPassenger || !validFare || !navigator.onLine || hasSubmittedRide;
@@ -1026,6 +1153,56 @@ function bookingStatusCopy(status) {
   return "requested";
 }
 
+function updateRequestPaymentCopy() {
+  const recurring = $("#repeat-weekly-toggle").checked;
+  const checkoutCopy = stripePaymentsEnabled
+    ? "Test-mode card Checkout is available after a driver accepts."
+    : "Test-mode card Checkout is not configured in this preview yet.";
+  text("#request-ride-note", recurring
+    ? `Each date is a separate pending ride request. Drivers accept each date individually. ${checkoutCopy}`
+    : `No payment is taken when you send a ride request. ${checkoutCopy}`);
+}
+
+function paymentStatusCopy(status) {
+  const normalized = String(status || "").toLowerCase();
+  const labels = {
+    unpaid: "Complete card payment through test-mode Stripe Checkout to confirm this ride.",
+    pending: "Your test payment is pending. Check your ride history for its latest status.",
+    failed: "The test payment did not complete. You can try Checkout again.",
+    expired: "This Checkout session expired. Start a new test payment.",
+    paid: "Stripe confirmed this test payment.",
+    partially_refunded: "Part of this test payment was refunded.",
+    refunded: "This test payment was refunded.",
+  };
+  if (!stripePaymentsEnabled && ["unpaid", "pending", "failed", "expired", ""].includes(normalized)) {
+    return "Test-mode card Checkout is not configured in this preview yet.";
+  }
+  return labels[normalized] || (normalized ? "Payment status is unavailable." : "Payment status is being checked.");
+}
+
+function canStartCheckout(booking) {
+  const paymentStatus = String(booking?.paymentStatus || "").toLowerCase();
+  return stripePaymentsEnabled &&
+    signedInRole === "passenger" &&
+    bookingStatusCopy(booking?.status) === "accepted" &&
+    ["unpaid", "pending", "failed", "expired"].includes(paymentStatus);
+}
+
+function checkoutButtonLabel(paymentStatus) {
+  const normalized = String(paymentStatus || "unpaid").toLowerCase();
+  if (normalized === "pending") return "Continue test Checkout";
+  if (normalized === "failed") return "Retry test payment";
+  if (normalized === "expired") return "Start test Checkout";
+  return "Pay by card (test mode)";
+}
+
+function setCheckoutButton(button, booking, { opening = false } = {}) {
+  if (!button) return;
+  button.hidden = !canStartCheckout(booking);
+  button.textContent = opening ? "Opening secure Checkout…" : checkoutButtonLabel(booking?.paymentStatus);
+  button.disabled = opening || !navigator.onLine || activeCheckoutBookingId === booking?.id;
+}
+
 function renderBookingStatus(booking, { focus = false } = {}) {
   currentBooking = booking;
   const status = bookingStatusCopy(booking?.status);
@@ -1035,17 +1212,22 @@ function renderBookingStatus(booking, { focus = false } = {}) {
   }
   cancelRideButton.hidden = status !== "requested";
   cancelRideButton.disabled = isCancellingBooking || !navigator.onLine;
+  const paymentMessage = paymentStatusCopy(booking?.paymentStatus);
+  text("#booking-accepted-payment-status", status === "accepted" ? paymentMessage : "");
+  setCheckoutButton(payForRideButton, booking, { opening: activeCheckoutBookingId === booking?.id });
+  hidden("#checkout-error", true);
+  text("#checkout-feedback", "");
   requestRideButton.hidden = true;
   $("#request-recurring-button").hidden = true;
   $("#signin-to-request-button").hidden = true;
   bookingStatusMessage.textContent =
     status === "accepted"
-      ? "A driver accepted this ride request."
+      ? `A driver accepted this ride request. ${paymentMessage}`
       : status === "declined"
         ? "No driver accepted this ride request."
         : status === "cancelled"
           ? "This ride request was cancelled."
-          : "Your ride request is waiting for a driver to accept.";
+          : "Your ride request is waiting for a driver.";
   const phone = booking.passengerPhone;
   const driverDetails = $("#booking-driver-details");
   if (driverDetails && status === "accepted") {
@@ -1056,6 +1238,60 @@ function renderBookingStatus(booking, { focus = false } = {}) {
   if (focus) {
     bookingStatus.setAttribute("tabindex", "-1");
     bookingStatus.focus();
+  }
+}
+
+async function startCheckout({ bookingId, button, feedback }) {
+  const booking = currentBooking?.id === bookingId ? currentBooking : historyBookings.get(bookingId);
+  if (
+    !bookingApi ||
+    !bookingId ||
+    !navigator.onLine ||
+    activeCheckoutBookingId ||
+    !canStartCheckout(booking)
+  ) return;
+
+  activeCheckoutBookingId = bookingId;
+  setCheckoutButton(button, booking, { opening: true });
+  hidden("#checkout-error", true);
+  if (feedback) {
+    feedback.hidden = false;
+    feedback.textContent = "Opening secure test-mode Checkout…";
+  }
+  bookingStatusMessage.textContent = "Opening secure test-mode Stripe Checkout…";
+
+  try {
+    const result = await bookingApi.createCheckoutSession({ bookingId });
+    const returnedPaymentStatus = String(result?.paymentStatus || "").toLowerCase();
+    if (!result?.url && ["unpaid", "pending", "failed", "expired", "paid", "partially_refunded", "refunded"].includes(returnedPaymentStatus)) {
+      const updatedBooking = { ...booking, paymentStatus: returnedPaymentStatus };
+      historyBookings.set(bookingId, updatedBooking);
+      if (currentBooking?.id === bookingId) renderBookingStatus(updatedBooking);
+      const message = paymentStatusCopy(returnedPaymentStatus);
+      if (feedback) feedback.textContent = message;
+      bookingStatusMessage.textContent = message;
+      await loadHistory({ quiet: true });
+      return;
+    }
+    const checkoutUrl = new URL(result?.url || "");
+    if (checkoutUrl.protocol !== "https:" || checkoutUrl.hostname !== "checkout.stripe.com") {
+      throw new Error("The payment service returned an invalid Checkout link. Please try again.");
+    }
+    window.location.assign(checkoutUrl.href);
+  } catch (error) {
+    const message = errorMessage(error, "We couldn’t open Checkout. Please try again.");
+    if (feedback) feedback.textContent = message;
+    const checkoutError = $("#checkout-error");
+    if (checkoutError && button === payForRideButton) {
+      checkoutError.textContent = message;
+      checkoutError.hidden = false;
+      if (feedback) feedback.textContent = "";
+    }
+    bookingStatusMessage.textContent = message;
+  } finally {
+    activeCheckoutBookingId = null;
+    const latestBooking = currentBooking?.id === bookingId ? currentBooking : historyBookings.get(bookingId);
+    setCheckoutButton(button, latestBooking);
   }
 }
 
@@ -1106,10 +1342,7 @@ async function requestRide() {
     requestRideButton.disabled = false;
   } finally {
     isRequestingBooking = false;
-    requestRideButton.textContent = "Request this ride";
-    if (currentQuote && new Date(currentQuote.expiresAt).getTime() > Date.now()) {
-      requestRideButton.disabled = !navigator.onLine;
-    }
+    if (currentQuote) updateQuoteActions(currentQuote);
   }
 }
 
@@ -1158,7 +1391,10 @@ async function requestRecurringRides() {
     bookingIdempotencyKey = null;
     currentRecurringSeries = result.series;
     $("#recurring-booking-state").hidden = false;
-    text("#recurring-booking-message", `${bookings.length} separate ride ${bookings.length === 1 ? "request was" : "requests were"} sent. Drivers accept each date individually.`);
+    const recurringPaymentCopy = stripePaymentsEnabled
+      ? "Test-mode card Checkout is offered separately after each driver accepts."
+      : "Test-mode card Checkout is not configured in this preview yet.";
+    text("#recurring-booking-message", `${bookings.length} separate ride ${bookings.length === 1 ? "request was" : "requests were"} sent. Drivers accept each date individually. ${recurringPaymentCopy}`);
     bookingStatusMessage.textContent = "Weekly ride requests sent.";
     updateQuoteActions(currentQuote);
     bookingStatus.focus();
@@ -1216,6 +1452,11 @@ function historyStatus(status) {
   return labels[String(status || "").toLowerCase()] || "Request status unavailable";
 }
 
+function historyPaymentCopy(booking) {
+  if (bookingStatusCopy(booking?.status) !== "accepted") return "Payment starts only after a driver accepts.";
+  return paymentStatusCopy(booking?.paymentStatus);
+}
+
 async function loadHistory({ quiet = false } = {}) {
   if (!bookingApi || isLoadingHistory || !navigator.onLine) {
     if (!navigator.onLine && !quiet) {
@@ -1239,9 +1480,31 @@ async function loadHistory({ quiet = false } = {}) {
     const bookings = normalizeBookings(result).sort(
       (left, right) => new Date(right.createdAt || right.pickupAt).getTime() - new Date(left.createdAt || left.pickupAt).getTime(),
     );
+    historyBookings.clear();
+    for (const booking of bookings) {
+      if (typeof booking.id !== "string" || !booking.id) continue;
+      historyBookings.set(booking.id, booking);
+    }
     if (currentBooking?.id) {
       const latestBooking = bookings.find((booking) => booking.id === currentBooking.id);
-      if (latestBooking && latestBooking.status !== currentBooking.status) renderBookingStatus(latestBooking);
+      if (latestBooking && (
+        latestBooking.status !== currentBooking.status ||
+        latestBooking.paymentStatus !== currentBooking.paymentStatus
+      )) renderBookingStatus(latestBooking);
+    }
+    if (checkoutReturnBookingId && !checkoutReturnHandled) {
+      checkoutReturnHandled = true;
+      const returnedBooking = historyBookings.get(checkoutReturnBookingId);
+      if (returnedBooking) {
+        renderBookingStatus(returnedBooking);
+        bookingStatusMessage.textContent = paymentStatusCopy(returnedBooking.paymentStatus);
+      } else {
+        bookingStatusMessage.textContent = "This ride is not available in your account. Check your ride history for its latest status.";
+      }
+      const cleanUrl = new URL(window.location.href);
+      cleanUrl.searchParams.delete("checkout");
+      cleanUrl.searchParams.delete("booking_id");
+      window.history.replaceState(null, "", `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`);
     }
     list.replaceChildren();
     const cancellableSeries = new Set();
@@ -1256,6 +1519,13 @@ async function loadHistory({ quiet = false } = {}) {
       fragment.querySelector("[data-history-passengers]").textContent = `${booking.passengerCount} ${booking.passengerCount === 1 ? "passenger" : "passengers"}`;
       fragment.querySelector("[data-history-status]").textContent = historyStatus(booking.status);
       fragment.querySelector("[data-history-total]").textContent = formatCurrency(booking.fareTotal, booking.currency);
+      fragment.querySelector("[data-history-payment]").textContent = historyPaymentCopy(booking);
+      const payButton = fragment.querySelector("[data-history-pay]");
+      payButton.hidden = !canStartCheckout(booking);
+      payButton.disabled = !navigator.onLine || activeCheckoutBookingId === booking.id;
+      payButton.textContent = checkoutButtonLabel(booking.paymentStatus);
+      payButton.dataset.bookingId = booking.id;
+      payButton.setAttribute("aria-label", `${checkoutButtonLabel(booking.paymentStatus)} for ride to ${booking.destinationLabel || "your destination"}`);
       const cancelSeriesButton = fragment.querySelector("[data-history-cancel-series]");
       if (booking.recurringSeriesId && String(booking.status).toLowerCase() === "pending" && !cancellableSeries.has(booking.recurringSeriesId)) {
         cancellableSeries.add(booking.recurringSeriesId);
@@ -1299,6 +1569,22 @@ async function handleCancelSeries(event) {
   }
 }
 
+async function handleHistoryPay(event) {
+  const button = event.target.closest("[data-history-pay]");
+  const bookingId = button?.dataset.bookingId;
+  if (!button || !bookingId || button.disabled) return;
+  const feedback = button.parentElement.querySelector("[data-history-payment-feedback]");
+  await startCheckout({ bookingId, button, feedback });
+}
+
+async function handleHistoryAction(event) {
+  if (event.target.closest("[data-history-pay]")) {
+    await handleHistoryPay(event);
+    return;
+  }
+  await handleCancelSeries(event);
+}
+
 function driverStatus(status) {
   const labels = {
     pending: "New request",
@@ -1307,6 +1593,10 @@ function driverStatus(status) {
     cancelled: "Cancelled",
   };
   return labels[String(status || "").toLowerCase()] || "Status unavailable";
+}
+
+function driverActionAllowed(action, request) {
+  return (action === "accept" || action === "decline") && request?.dataset.bookingStatus === "pending";
 }
 
 function renderDriverBookings(bookings) {
@@ -1480,20 +1770,23 @@ async function handleDriverAction(event) {
   const request = button?.closest("[data-driver-request]");
   const bookingId = request?.dataset.bookingId;
   if (!button || !bookingId || button.disabled || !navigator.onLine) return;
-  const decision = button.dataset.action;
+  const action = button.dataset.action;
+  if (!driverActionAllowed(action, request)) return;
   const feedback = request.querySelector("[data-request-feedback]");
-  const buttons = [...request.querySelectorAll("[data-action='accept'], [data-action='decline']")];
+  const buttons = [...request.querySelectorAll("[data-action]")];
   buttons.forEach((item) => (item.disabled = true));
   feedback.hidden = false;
-  feedback.textContent = decision === "accept" ? "Accepting request…" : "Declining request…";
+  feedback.textContent = action === "accept" ? "Accepting request…" : "Declining request…";
 
   try {
-    await bookingApi.respondToBooking({ bookingId, decision });
-    text("#driver-action-status", decision === "accept" ? "Ride accepted." : "Ride declined.");
+    await bookingApi.respondToBooking({ bookingId, decision: action });
+    text("#driver-action-status", action === "accept" ? "Ride accepted." : "Ride declined.");
     await loadDriverQueue({ quiet: true });
   } catch (error) {
     feedback.textContent = errorMessage(error, "We couldn’t update this request. Refresh the list and try again.");
-    buttons.forEach((item) => (item.disabled = !navigator.onLine));
+    buttons.forEach((item) => {
+      item.disabled = !navigator.onLine || !driverActionAllowed(item.dataset.action, request);
+    });
   }
 }
 
@@ -1599,10 +1892,14 @@ async function initializeApplication() {
     if (!response.ok || !configuration?.supabaseUrl || !configuration?.supabasePublishableKey) {
       throw new Error(configuration?.error?.message || "Steadlane account setup is not complete yet.");
     }
+    stripePaymentsEnabled = configuration.stripePaymentsEnabled === true;
+    updateRequestPaymentCopy();
+    if (currentQuote) updateQuoteActions(currentQuote);
     authClient = createAuthClient(configuration);
     bookingApi = createBookingApi(authClient);
   } catch (error) {
     authClient = null;
+    stripePaymentsEnabled = false;
     try {
       bookingApi = createBookingApi(null);
     } catch {
@@ -1610,6 +1907,7 @@ async function initializeApplication() {
     }
     const message = errorMessage(error, "Steadlane account setup is not complete yet.");
     authSetupError = `${message} Ask the Steadlane team to finish account setup.`;
+    updateRequestPaymentCopy();
     setAuthMessage(authSetupError, "error");
     signInButton.disabled = true;
     for (const form of [$("#login-form"), $("#signup-form")]) {
@@ -1652,14 +1950,18 @@ function updateNetworkState() {
   const routeSubmit = rideForm.querySelector("button[type='submit']");
   routeSubmit.disabled = !navigator.onLine || rideForm.getAttribute("aria-busy") === "true";
   cancelRideButton.disabled = !navigator.onLine || isCancellingBooking;
+  setCheckoutButton(payForRideButton, currentBooking, { opening: activeCheckoutBookingId === currentBooking?.id });
   signInButton.disabled = !navigator.onLine || Boolean(authSetupError) || !authClient;
   if (!isSavingAvailability) $("#save-availability-button").disabled = !navigator.onLine;
   for (const button of $$("#driver-list [data-action]")) {
     const request = button.closest("[data-driver-request]");
-    button.disabled = !navigator.onLine || request?.dataset.bookingStatus !== "pending";
+    button.disabled = !navigator.onLine || !driverActionAllowed(button.dataset.action, request);
   }
   for (const button of $$("#history-list [data-history-cancel-series]")) {
     button.disabled = !navigator.onLine;
+  }
+  for (const button of $$("#history-list [data-history-pay]")) {
+    button.disabled = !navigator.onLine || activeCheckoutBookingId === button.dataset.bookingId;
   }
   if (navigator.onLine) {
     if (!passengerView.hidden && (!$("#passenger-history-panel").hidden || currentBooking)) {
@@ -1693,6 +1995,7 @@ function syncScheduleMode() {
   $("#pickup-time-field").hidden = recurring;
   pickupTimeInput.required = !recurring;
   $("#recurrence-options").hidden = !recurring;
+  updateRequestPaymentCopy();
   if (currentQuote) updateQuoteActions(currentQuote);
 }
 
@@ -1924,8 +2227,13 @@ rideForm.addEventListener("reset", () => {
 requestRideButton.addEventListener("click", () => void requestRide());
 $("#request-recurring-button").addEventListener("click", () => void requestRecurringRides());
 cancelRideButton.addEventListener("click", () => void cancelRide());
+payForRideButton.addEventListener("click", () => void startCheckout({
+  bookingId: currentBooking?.id,
+  button: payForRideButton,
+  feedback: $("#checkout-feedback"),
+}));
 $("#driver-list").addEventListener("click", (event) => void handleDriverAction(event));
-$("#history-list").addEventListener("click", (event) => void handleCancelSeries(event));
+$("#history-list").addEventListener("click", (event) => void handleHistoryAction(event));
 $("#availability-form").addEventListener("submit", (event) => void saveDriverAvailability(event));
 for (const checkbox of $$(".availability-day input[name='availability-day']")) {
   checkbox.addEventListener("change", () => {
@@ -1947,7 +2255,10 @@ window.addEventListener("focus", () => {
 
 window.setInterval(() => {
   if (!navigator.onLine) return;
-  if (!passengerView.hidden && currentBooking && bookingStatusCopy(currentBooking.status) === "requested") {
+  if (!passengerView.hidden && currentBooking && (
+    bookingStatusCopy(currentBooking.status) === "requested" ||
+    (bookingStatusCopy(currentBooking.status) === "accepted" && !["paid", "partially_refunded", "refunded"].includes(currentBooking.paymentStatus))
+  )) {
     void loadHistory({ quiet: true });
   }
   if (!driverView.hidden) void loadDriverQueue({ quiet: true });
