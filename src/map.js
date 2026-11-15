@@ -287,9 +287,9 @@ export function createRouteMap(element) {
   }
 
   return Object.freeze({
-    setRoute(route) {
+    setRoute(nextRoute) {
       if (destroyed) return;
-      route = normalizeRoute(route);
+      route = normalizeRoute(nextRoute);
       render();
     },
 

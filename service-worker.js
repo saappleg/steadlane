@@ -1,9 +1,9 @@
-const CACHE_NAME = "steadlane-shell-v3";
+const CACHE_NAME = "steadlane-shell-v4";
 const APP_SHELL = [
   "/",
   "/index.html",
   "/src/styles.css",
-  "/src/app.js",
+  "/src/app.js?v=4",
   "/src/auth.js",
   "/src/booking-api.js",
   "/src/map.js",
@@ -11,7 +11,7 @@ const APP_SHELL = [
   "/manifest.webmanifest",
   "/assets/steadlane-icon.svg",
 ];
-const SHELL_PATHS = new Set(APP_SHELL);
+const SHELL_PATHS = new Set(APP_SHELL.map((path) => new URL(path, self.location.origin).pathname));
 
 self.addEventListener("install", (event) => {
   event.waitUntil(

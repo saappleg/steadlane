@@ -24,9 +24,9 @@ The current beta accepts pickup, intermediate stop, and destination addresses in
 
 ## Account model
 
-- Anyone can create a passenger account with email and password.
-- Email confirmation stays enabled. Set the Supabase Auth Site URL and redirect allowlist to the deployed Steadlane origin. Add the local Wrangler origin when testing locally.
-- Configure a custom SMTP provider before inviting external passengers or drivers. Supabase's hosted default email service only sends to addresses on the Supabase organization team and is limited to 2 emails per hour. Keep email confirmation enabled; disabling it would let a user register an address they do not control. See [Supabase custom SMTP](https://supabase.com/docs/guides/auth/auth-smtp) and [email/password auth](https://supabase.com/docs/guides/auth/passwords).
+- Passenger email/password signup is enabled in the confirmed beta staging project. Email confirmation remains required; drivers stay invite-only.
+- The exact Preview root is in Supabase Auth's redirect allowlist. The project's existing Site URL was left unchanged; signup and password-recovery flows specify the Preview URL directly. Add local and production redirects only when those origins are ready.
+- Custom SMTP is not configured yet. Configure a provider before inviting passengers or drivers outside the Supabase team's test addresses. Keep email confirmation enabled; disabling it would let a user register an address they do not control. See [Supabase custom SMTP](https://supabase.com/docs/guides/auth/auth-smtp) and [email/password auth](https://supabase.com/docs/guides/auth/passwords).
 - New profiles always start with the `passenger` role. Signup metadata can set the passenger's name and phone, but cannot set a role.
 - Invite drivers from Supabase Auth after SMTP is working. After the invited user exists, inspect its profile and promote it through the Supabase SQL Editor as an administrator:
 
@@ -49,12 +49,12 @@ The current beta accepts pickup, intermediate stop, and destination addresses in
 
 ## Supabase project setup
 
-Public address search, route estimates, fare rates, and map tiles work without Supabase configuration or passenger sign-in. The Preview values in `wrangler.jsonc` currently point to the Supabase project supplied for this beta; confirm it is intended for Preview/test data before applying migrations or entering ride details. Production values remain placeholders. To enable accounts and ride requests, configure the Supabase project URL and publishable key, then:
+Public address search, route estimates, fare rates, and map tiles work without passenger sign-in. Preview values in `wrangler.jsonc` point to the Supabase project confirmed for beta staging; production values remain placeholders. Do not use production data in the Preview.
 
-1. Replace the two clearly marked public placeholders in `wrangler.jsonc`: `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY`. The URL and publishable key are returned by `/api/config`; the publishable key is intended to be public and is protected by Postgres grants and row-level security.
-2. In Supabase Auth, enable email signups and email confirmations. Configure Site URL and the deployed and local redirect URLs. Configure custom SMTP before using addresses outside the organization's team.
-3. Apply `supabase/migrations/20261115000100_steadlane_bookings.sql` once as the project database owner. The migration is the source-controlled schema definition. For a one-time setup, paste the full file into the Supabase SQL Editor and run it. If the repository is initialized with the Supabase CLI, link it to the project and use `supabase db push` to apply the tracked migration.
-4. Confirm that the migration created the Auth signup trigger and the `profiles`, `ride_quotes`, `driver_weekly_availability`, `booking_series`, `bookings`, `booking_contacts`, and `driver_responses` tables. Every public table enables RLS. The migration explicitly grants only the Data API permissions each role needs; new public tables are not automatically exposed by current Supabase defaults.
+1. The Preview `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` are already set in `wrangler.jsonc`. The URL and publishable key are returned by `/api/config`; the publishable key is intended to be public and is protected by Postgres grants and row-level security.
+2. Supabase Auth has email signup and email confirmation enabled. The exact Preview root is in the redirect allowlist; the existing Site URL was left unchanged. Custom SMTP is still disabled, so configure a provider before external passengers rely on confirmation or password-reset emails.
+3. Both tracked migrations were run successfully in the confirmed staging project's Supabase SQL Editor: `20261115000100_steadlane_bookings.sql` and `20261115000200_steadlane_stripe_payments.sql`. Do not run them again. SQL Editor runs do not add entries to the migration history table; retain the tracked files as the schema source of truth and establish the CLI migration baseline before using `supabase db push` on this existing database.
+4. Read-only catalog checks confirmed all nine public tables exist with RLS enabled. The ride quote table has no direct client policy because the Worker writes server-verified quotes; Stripe webhook events are service-only. RPC grants were checked: no anonymous execution, seven authenticated booking RPCs, and four payment RPCs limited to `service_role`.
 
 The signup trigger copies only validated `full_name` and `phone` metadata into a profile. It always writes role `passenger`. Profile updates are limited to the name and phone columns.
 
@@ -70,6 +70,8 @@ Replace the public placeholders in `wrangler.jsonc` before deploying. Set the se
 - `SUPABASE_SECRET_KEY` — Supabase `sb_secret_...` key. The Worker uses it only for server-calculated quote inserts and the narrowly allowlisted payment-session and signed-webhook RPCs. It is not returned by `/api/config`, is never used by browser code, and is not used for passenger/driver reads or ride changes. It remains a powerful project credential if compromised; protect and rotate it like any other server secret.
 - `STRIPE_SECRET_KEY` — a rotated Stripe test-mode secret beginning `sk_test_`. The Worker rejects live-mode keys. Never place this secret in browser code, GitHub, or chat.
 - `STRIPE_WEBHOOK_SECRET` — the signing secret for the Stripe test-mode webhook pointed at `/api/stripe/webhook`.
+
+The current Preview still needs `SUPABASE_SECRET_KEY` before signed-in quote storage and ride requests can work. The Geoapify key is configured for Preview; rotate it before inviting broader beta use because it was shared in chat. Stripe Checkout remains disabled until the pasted test secret is rotated and the test webhook signing secret is added.
 
 Stripe Checkout requires the `steadlane_stripe_payments` migration before passenger payments can be enabled. Add `STRIPE_PAYMENTS_ENABLED=true` as a Preview-only Worker variable only after the migration is applied and all three payment secrets (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and `SUPABASE_SECRET_KEY`) are configured. The app reports payments enabled only when those test-mode credentials are present and Stripe Tax remains off. Keep payment secrets in Cloudflare Preview; do not configure production secrets for this beta. Configure a Stripe test-mode webhook for `/api/stripe/webhook` and subscribe to `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`, and `charge.refunded`.
 
