@@ -160,11 +160,22 @@ test("route quotes use provider metrics and server rates, then store the trusted
       const placeId = url.searchParams.get("id");
       const pickup = placeId === "pickup-place-001";
       return jsonResponse({
-        features: [{
-          properties: pickup
-            ? { place_id: "pickup-place-001", formatted: "Canonical Pickup, Cincinnati", lat: 39.1, lon: -84.5 }
-            : { place_id: "destination-place-002", formatted: "Canonical Destination, Cincinnati", lat: 39.2, lon: -84.4 },
-        }],
+        features: [
+          {
+            properties: {
+              feature_type: "drive_10",
+              place_id: "unrelated-route-feature-099",
+              formatted: "Do not use this route feature",
+              lat: 35,
+              lon: -80,
+            },
+          },
+          {
+            properties: pickup
+              ? { feature_type: "details", place_id: "canonical-pickup-001", formatted: "Canonical Pickup, Cincinnati", lat: 39.1, lon: -84.5 }
+              : { feature_type: "details", place_id: "canonical-destination-002", formatted: "Canonical Destination, Cincinnati", lat: 39.2, lon: -84.4 },
+          },
+        ],
       });
     }
 
@@ -264,8 +275,8 @@ test("anonymous route estimates work without Supabase and never persist a quote"
       return jsonResponse({
         features: [{
           properties: pickup
-            ? { place_id: "guest-pickup-001", formatted: "Guest pickup, Cincinnati", lat: 39.1, lon: -84.5 }
-            : { place_id: "guest-destination-002", formatted: "Guest destination, Cincinnati", lat: 39.2, lon: -84.4 },
+            ? { feature_type: "details", place_id: "guest-pickup-001", formatted: "Guest pickup, Cincinnati", lat: 39.1, lon: -84.5 }
+            : { feature_type: "details", place_id: "guest-destination-002", formatted: "Guest destination, Cincinnati", lat: 39.2, lon: -84.4 },
         }],
       });
     }
@@ -316,7 +327,8 @@ test("multi-stop route estimates preserve stops, flatten route legs, and remain 
         "middle-stop-002": { formatted: "Stop, Cincinnati", lat: 39.15, lon: -84.45 },
         "guest-destination-003": { formatted: "Destination, Cincinnati", lat: 39.2, lon: -84.4 },
       };
-      return jsonResponse({ features: [{ properties: { place_id: placeId, ...places[placeId] } }] });
+      const returnedPlaceId = placeId === "middle-stop-002" ? "canonical-middle-stop-002" : placeId;
+      return jsonResponse({ features: [{ properties: { feature_type: "details", place_id: returnedPlaceId, ...places[placeId] } }] });
     }
     if (url.origin === "https://api.geoapify.com" && url.pathname === "/v1/routing") {
       assert.equal(url.searchParams.get("waypoints"), "39.1,-84.5|39.15,-84.45|39.2,-84.4");
@@ -354,7 +366,7 @@ test("multi-stop route estimates preserve stops, flatten route legs, and remain 
 
   assert.equal(response.status, 200);
   assert.equal(payload.quote.stops.length, 1);
-  assert.equal(payload.quote.stops[0].placeId, "middle-stop-002");
+  assert.equal(payload.quote.stops[0].placeId, "canonical-middle-stop-002");
   assert.equal(payload.quote.route.geometry.type, "LineString");
   assert.deepEqual(payload.quote.route.geometry.coordinates, [
     [-84.5, 39.1],
@@ -665,8 +677,8 @@ test("route quotes reject canonical addresses outside the beta rectangle", async
       return jsonResponse({
         features: [{
           properties: pickup
-            ? { place_id: "outside-place-001", formatted: "Outside service area", lat: 39.1, lon: -85 }
-            : { place_id: "inside-place-002", formatted: "Inside Cincinnati area", lat: 39.2, lon: -84.4 },
+            ? { feature_type: "details", place_id: "outside-place-001", formatted: "Outside service area", lat: 39.1, lon: -85 }
+            : { feature_type: "details", place_id: "inside-place-002", formatted: "Inside Cincinnati area", lat: 39.2, lon: -84.4 },
         }],
       });
     }
