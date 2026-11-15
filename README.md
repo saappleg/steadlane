@@ -82,6 +82,8 @@ The Geoapify key is sent only from the Worker to Geoapify. Map tiles are served 
 
 Cloudflare Worker Builds are already connected to this GitHub repository on the `main` production branch. The current dashboard command is `npx wrangler deploy`, with no separate build command. A commit merged to `main` therefore triggers Cloudflare's production deployment automatically. That native Cloudflare path does not run `npm test`; review the pull request checks before merging to `main`.
 
+Cloudflare preview branch builds are enabled, but Preview URLs are disabled. A pull request can run a preview build, but Cloudflare will not publish a separate public preview URL with the current setting.
+
 The repository also has a separate, manually triggered GitHub Actions workflow. It runs `npm test` and then deploys with Wrangler, but only when dispatched from `main`. It requires `CLOUDFLARE_ACCOUNT_ID` and a least-privilege `CLOUDFLARE_API_TOKEN` in GitHub Actions secrets. Use one deployment path for a release; manually dispatching the workflow after Cloudflare has already deployed the same `main` commit would publish it twice. Neither path applies the Supabase migration or creates external resources.
 
 The Cloudflare build connection already has its own build token; do not copy that token into GitHub or the repository. Once the Worker runtime is enabled by a deployment, configure the non-secret Supabase URL and publishable key from `wrangler.jsonc` and add `GEOAPIFY_API_KEY` and `SUPABASE_SECRET_KEY` as Worker secrets in Cloudflare. The placeholders currently in `wrangler.jsonc` intentionally make `/api/config` unavailable until real project values are configured.
