@@ -124,7 +124,7 @@ function stripePaymentsAreEnabled(env) {
     env.STRIPE_AUTOMATIC_TAX_ENABLED === "false";
   return env.STRIPE_PAYMENTS_ENABLED === "true" &&
     typeof env.STRIPE_SECRET_KEY === "string" &&
-    /^sk_test_[A-Za-z0-9_]{20,}$/.test(env.STRIPE_SECRET_KEY.trim()) &&
+    /^(?:sk_test_|rk_test_)[A-Za-z0-9_]{20,}$/.test(env.STRIPE_SECRET_KEY.trim()) &&
     typeof env.SUPABASE_SECRET_KEY === "string" &&
     env.SUPABASE_SECRET_KEY.trim().startsWith("sb_secret_") &&
     typeof env.STRIPE_WEBHOOK_SECRET === "string" &&

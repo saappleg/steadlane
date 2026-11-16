@@ -8,6 +8,7 @@ const PUBLISHABLE_KEY = "sb_publishable_test_public_key";
 const SUPABASE_SECRET_KEY = "sb_secret_test_server_key";
 const GEOAPIFY_API_KEY = "geoapify_test_server_key";
 const STRIPE_SECRET_KEY = "sk_test_steadlane_test_worker_key_001";
+const STRIPE_RESTRICTED_KEY = "rk_test_steadlane_test_worker_key_001";
 const STRIPE_WEBHOOK_SECRET = "whsec_steadlane_test_worker_secret_001";
 const USER_ID = "11111111-1111-4111-8111-111111111111";
 const USER_TOKEN = `${"a".repeat(30)}.${"b".repeat(30)}.${"c".repeat(30)}`;
@@ -56,6 +57,68 @@ function installFetchMock(t, handler) {
   });
 }
 
+function signedStripeWebhookRequest(event) {
+  const rawBody = JSON.stringify(event);
+  const timestamp = Math.floor(Date.now() / 1000);
+  const signature = createHmac("sha256", STRIPE_WEBHOOK_SECRET)
+    .update(`${timestamp}.${rawBody}`, "utf8")
+    .digest("hex");
+  return new Request(`${APP_ORIGIN}/api/stripe/webhook`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "stripe-signature": `t=${timestamp},v1=${signature}`,
+    },
+    body: rawBody,
+  });
+}
+
+function checkoutSessionWebhookEvent({ eventId, eventType, sessionId, paymentIntentId, paymentStatus }) {
+  return {
+    id: eventId,
+    type: eventType,
+    created: Math.floor(Date.now() / 1000),
+    livemode: false,
+    data: {
+      object: {
+        id: sessionId,
+        metadata: {
+          steadlane_booking_id: "22222222-2222-4222-8222-222222222222",
+          steadlane_payment_attempt_id: "77777777-7777-4777-8777-777777777777",
+        },
+        payment_intent: paymentIntentId,
+        amount_total: 2_800,
+        currency: "usd",
+        payment_status: paymentStatus,
+      },
+    },
+  };
+}
+
+async function assertStripeWebhookForwarded(t, event, expectedFields, paymentStatus) {
+  let forwardedBody;
+  installFetchMock(t, async (input, init = {}) => {
+    const url = new URL(input);
+    const headers = new Headers(init.headers);
+    assert.equal(url.origin, SUPABASE_URL);
+    assert.equal(url.pathname, "/rest/v1/rpc/process_stripe_webhook_event");
+    assert.equal(headers.get("apikey"), SUPABASE_SECRET_KEY);
+    assert.equal(headers.has("authorization"), false);
+    forwardedBody = JSON.parse(init.body);
+    return jsonResponse({ duplicate: false, applied: true, payment_status: paymentStatus });
+  });
+
+  const response = await worker.fetch(
+    signedStripeWebhookRequest(event),
+    makeEnv({ STRIPE_WEBHOOK_SECRET, SUPABASE_SECRET_KEY }),
+  );
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload, { received: true, duplicate: false });
+  assert.deepEqual(forwardedBody, expectedFields);
+}
+
 test("GET /api/config exposes only the public Supabase URL and publishable key", async () => {
   const response = await worker.fetch(apiRequest("/api/config"), makeEnv());
   const payload = await response.json();
@@ -75,6 +138,23 @@ test("GET /api/config exposes only the public Supabase URL and publishable key",
     STRIPE_WEBHOOK_SECRET,
   }));
   assert.equal((await paymentsReady.json()).stripePaymentsEnabled, true);
+
+  const restrictedPaymentsReady = await worker.fetch(apiRequest("/api/config"), makeEnv({
+    STRIPE_PAYMENTS_ENABLED: "true",
+    STRIPE_SECRET_KEY: STRIPE_RESTRICTED_KEY,
+    STRIPE_WEBHOOK_SECRET,
+  }));
+  assert.equal((await restrictedPaymentsReady.json()).stripePaymentsEnabled, true);
+
+  for (const liveKey of ["sk_live_steadlane_test_worker_key_001", "rk_live_steadlane_test_worker_key_001"]) {
+    const livePayments = await worker.fetch(apiRequest("/api/config"), makeEnv({
+      STRIPE_PAYMENTS_ENABLED: "true",
+      STRIPE_SECRET_KEY: liveKey,
+      STRIPE_WEBHOOK_SECRET,
+    }));
+    assert.equal((await livePayments.json()).stripePaymentsEnabled, false);
+  }
+
   const taxEnabled = await worker.fetch(apiRequest("/api/config"), makeEnv({
     STRIPE_PAYMENTS_ENABLED: "true",
     STRIPE_SECRET_KEY,
@@ -950,7 +1030,7 @@ test("ride history works before the payment migration and does not query payment
   assert.equal(payload.bookings[0].id, bookingId);
 });
 
-test("accepted ride Checkout uses its stored fare and saves the test session server-side", async (t) => {
+test("accepted ride Checkout uses a restricted test key and saves the server fare session", async (t) => {
   const bookingId = "22222222-2222-4222-8222-222222222222";
   const paymentAttemptId = "77777777-7777-4777-8777-777777777777";
   const checkoutSessionId = "cs_test_steadlanecheckout001";
@@ -986,7 +1066,7 @@ test("accepted ride Checkout uses its stored fare and saves the test session ser
     }
     if (url.origin === "https://api.stripe.com" && url.pathname === "/v1/checkout/sessions") {
       assert.equal(method, "POST");
-      assert.equal(headers.get("authorization"), `Bearer ${STRIPE_SECRET_KEY}`);
+      assert.equal(headers.get("authorization"), `Bearer ${STRIPE_RESTRICTED_KEY}`);
       const fields = new URLSearchParams(init.body);
       assert.equal(fields.get("line_items[0][price_data][unit_amount]"), "2800");
       assert.equal(fields.get("metadata[steadlane_booking_id]"), bookingId);
@@ -1022,7 +1102,7 @@ test("accepted ride Checkout uses its stored fare and saves the test session ser
       headers: { authorization: `Bearer ${USER_TOKEN}` },
       body: {},
     }),
-    makeEnv({ STRIPE_PAYMENTS_ENABLED: "true", STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET }),
+    makeEnv({ STRIPE_PAYMENTS_ENABLED: "true", STRIPE_SECRET_KEY: STRIPE_RESTRICTED_KEY, STRIPE_WEBHOOK_SECRET }),
   );
   const payload = await response.json();
 
@@ -1313,6 +1393,75 @@ test("Stripe webhook verifies the signature and records a paid session through t
   assert.equal(response.status, 200);
   assert.deepEqual(payload, { received: true, duplicate: false });
   assert.equal(calls.length, 1);
+});
+
+test("Stripe async payment success webhook records the saved attempt as paid", async (t) => {
+  const event = checkoutSessionWebhookEvent({
+    eventId: "evt_steadlaneasyncpaid001",
+    eventType: "checkout.session.async_payment_succeeded",
+    sessionId: "cs_test_steadlaneasyncpaid001",
+    paymentIntentId: "pi_steadlaneasyncpaid001",
+    paymentStatus: "paid",
+  });
+
+  await assertStripeWebhookForwarded(t, event, {
+    p_event_id: event.id,
+    p_event_type: event.type,
+    p_livemode: false,
+    p_payment_attempt_id: "77777777-7777-4777-8777-777777777777",
+    p_checkout_session_id: "cs_test_steadlaneasyncpaid001",
+    p_payment_intent_id: "pi_steadlaneasyncpaid001",
+    p_amount_total: 2_800,
+    p_amount_refunded_cents: null,
+    p_currency: "usd",
+    p_payment_status: "paid",
+  }, "paid");
+});
+
+test("Stripe async payment failure webhook records the saved attempt as failed", async (t) => {
+  const event = checkoutSessionWebhookEvent({
+    eventId: "evt_steadlaneasyncfailed001",
+    eventType: "checkout.session.async_payment_failed",
+    sessionId: "cs_test_steadlaneasyncfailed001",
+    paymentIntentId: "pi_steadlaneasyncfailed001",
+    paymentStatus: "unpaid",
+  });
+
+  await assertStripeWebhookForwarded(t, event, {
+    p_event_id: event.id,
+    p_event_type: event.type,
+    p_livemode: false,
+    p_payment_attempt_id: "77777777-7777-4777-8777-777777777777",
+    p_checkout_session_id: "cs_test_steadlaneasyncfailed001",
+    p_payment_intent_id: "pi_steadlaneasyncfailed001",
+    p_amount_total: 2_800,
+    p_amount_refunded_cents: null,
+    p_currency: "usd",
+    p_payment_status: "unpaid",
+  }, "failed");
+});
+
+test("Checkout expiry webhook records the saved attempt as expired", async (t) => {
+  const event = checkoutSessionWebhookEvent({
+    eventId: "evt_steadlaneexpiredwebhook001",
+    eventType: "checkout.session.expired",
+    sessionId: "cs_test_steadlaneexpiredwebhook001",
+    paymentIntentId: null,
+    paymentStatus: "unpaid",
+  });
+
+  await assertStripeWebhookForwarded(t, event, {
+    p_event_id: event.id,
+    p_event_type: event.type,
+    p_livemode: false,
+    p_payment_attempt_id: "77777777-7777-4777-8777-777777777777",
+    p_checkout_session_id: "cs_test_steadlaneexpiredwebhook001",
+    p_payment_intent_id: null,
+    p_amount_total: 2_800,
+    p_amount_refunded_cents: null,
+    p_currency: "usd",
+    p_payment_status: "unpaid",
+  }, "expired");
 });
 
 test("Stripe refund webhooks send the cumulative refund amount to the server RPC", async (t) => {

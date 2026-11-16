@@ -9,7 +9,7 @@ function isPlainObject(value) {
 
 function requireTestSecret(env) {
   const secretKey = typeof env.STRIPE_SECRET_KEY === "string" ? env.STRIPE_SECRET_KEY.trim() : "";
-  if (!/^sk_test_[A-Za-z0-9_]{20,}$/.test(secretKey)) {
+  if (!/^(?:sk_test_|rk_test_)[A-Za-z0-9_]{20,}$/.test(secretKey)) {
     throw new Error("Stripe test credentials are not configured.");
   }
   return secretKey;
@@ -135,7 +135,7 @@ function validateCheckoutSession(session, expectedId = null) {
   return session;
 }
 
-/** Create a card-only test Checkout Session using the persisted ride fare. */
+/** Create a test Checkout Session using the persisted ride fare and Dashboard payment-method settings. */
 export async function createStripeCheckoutSession(env, input) {
   const details = validateCheckoutInput(input);
   const tax = optionalTaxSettings(env);
@@ -144,7 +144,6 @@ export async function createStripeCheckoutSession(env, input) {
     "success_url": details.successUrl,
     "cancel_url": details.cancelUrl,
     "client_reference_id": details.bookingId,
-    "payment_method_types[0]": "card",
     "submit_type": "book",
     "line_items[0][quantity]": "1",
     "line_items[0][price_data][currency]": details.currency,

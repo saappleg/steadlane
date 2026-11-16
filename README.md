@@ -68,7 +68,7 @@ Replace the public placeholders in `wrangler.jsonc` before deploying. Set the se
 
 - `GEOAPIFY_API_KEY` — Geoapify key with access to autocomplete, place details, routing, and map tiles.
 - `SUPABASE_SECRET_KEY` — Supabase `sb_secret_...` key. The Worker uses it only for server-calculated quote inserts and the narrowly allowlisted payment-session and signed-webhook RPCs. It is not returned by `/api/config`, is never used by browser code, and is not used for passenger/driver reads or ride changes. It remains a powerful project credential if compromised; protect and rotate it like any other server secret.
-- `STRIPE_SECRET_KEY` — a rotated Stripe test-mode secret beginning `sk_test_`. The Worker rejects live-mode keys. Never place this secret in browser code, GitHub, or chat.
+- `STRIPE_SECRET_KEY` — a rotated Stripe test API key. The Stripe helper accepts `sk_test_` and `rk_test_` keys and rejects live-mode keys. Prefer a restricted `rk_test_` key with Checkout Sessions write permission (which includes read); use it after the Worker configuration gate accepts that prefix. Never place this key in browser code, GitHub, or chat.
 - `STRIPE_WEBHOOK_SECRET` — the signing secret for the Stripe test-mode webhook pointed at `/api/stripe/webhook`.
 
 The current Preview still needs `SUPABASE_SECRET_KEY` before signed-in quote storage and ride requests can work. The Geoapify key is configured for Preview; rotate it before inviting broader beta use because it was shared in chat. Stripe Checkout remains disabled until the pasted test secret is rotated and the test webhook signing secret is added.

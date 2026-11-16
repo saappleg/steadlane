@@ -5,6 +5,7 @@ import test from "node:test";
 import { createStripeCheckoutSession, verifyStripeWebhook } from "../src/stripe.js";
 
 const SECRET_KEY = "sk_test_steadlane_test_only_001";
+const RESTRICTED_KEY = "rk_test_steadlane_test_only_001";
 const WEBHOOK_SECRET = "whsec_steadlane_test_only_secret_001";
 
 function installFetchMock(t, handler) {
@@ -28,7 +29,7 @@ function checkoutArgs(overrides = {}) {
   };
 }
 
-test("Checkout uses only the server fare snapshot and creates a card-only test session", async (t) => {
+test("Checkout uses the server fare snapshot and leaves payment methods to Stripe settings", async (t) => {
   let request;
   installFetchMock(t, async (input, init = {}) => {
     request = { url: new URL(input), init };
@@ -56,7 +57,7 @@ test("Checkout uses only the server fare snapshot and creates a card-only test s
 
   const fields = new URLSearchParams(request.init.body);
   assert.equal(fields.get("mode"), "payment");
-  assert.equal(fields.get("payment_method_types[0]"), "card");
+  assert.equal([...fields.keys()].some((name) => name.startsWith("payment_method_types[")), false);
   assert.equal(fields.get("line_items[0][price_data][unit_amount]"), "2800");
   assert.equal(fields.get("line_items[0][price_data][currency]"), "usd");
   assert.equal(fields.get("metadata[steadlane_booking_id]"), "88888888-8888-4888-8888-888888888888");
@@ -68,17 +69,38 @@ test("Checkout uses only the server fare snapshot and creates a card-only test s
   assert.equal(fields.has("payment_intent_data[capture_method]"), false);
 });
 
-test("Checkout refuses a live-mode key without contacting Stripe", async (t) => {
+test("Checkout accepts a least-privilege restricted test key", async (t) => {
+  let request;
+  installFetchMock(t, async (input, init = {}) => {
+    request = { url: new URL(input), init };
+    return new Response(JSON.stringify({
+      id: "cs_test_steadlanerestricted001",
+      url: "https://checkout.stripe.com/c/pay/cs_test_steadlanerestricted001",
+      status: "open",
+      livemode: false,
+      expires_at: Math.floor(Date.now() / 1000) + 1_800,
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  });
+
+  await createStripeCheckoutSession({ STRIPE_SECRET_KEY: RESTRICTED_KEY }, checkoutArgs());
+
+  assert.equal(request.url.href, "https://api.stripe.com/v1/checkout/sessions");
+  assert.equal(new Headers(request.init.headers).get("authorization"), `Bearer ${RESTRICTED_KEY}`);
+});
+
+test("Checkout refuses live-mode secret and restricted keys without contacting Stripe", async (t) => {
   let fetchCalls = 0;
   installFetchMock(t, async () => {
     fetchCalls += 1;
     throw new Error("A live-mode request must never be sent by this beta.");
   });
 
-  await assert.rejects(() => createStripeCheckoutSession(
-    { STRIPE_SECRET_KEY: "sk_live_never_use" },
-    checkoutArgs(),
-  ));
+  for (const liveKey of ["sk_live_never_use", "rk_live_never_use"]) {
+    await assert.rejects(() => createStripeCheckoutSession(
+      { STRIPE_SECRET_KEY: liveKey },
+      checkoutArgs(),
+    ));
+  }
   assert.equal(fetchCalls, 0);
 });
 
