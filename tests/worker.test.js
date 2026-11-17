@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import test from "node:test";
+import { createRouteMap } from "../src/map.js";
 import worker from "../src/worker.js";
 
 const SUPABASE_URL = "https://steadlane-test.supabase.co";
@@ -55,6 +56,75 @@ function installFetchMock(t, handler) {
   t.after(() => {
     globalThis.fetch = originalFetch;
   });
+}
+
+class RouteMapMockElement {
+  constructor(tagName) {
+    this.tagName = tagName;
+    this.attributes = new Map();
+    this.children = [];
+    this.style = {};
+    this.classList = { add() {} };
+    this.listeners = new Map();
+  }
+
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+  }
+
+  removeAttribute(name) {
+    this.attributes.delete(name);
+  }
+
+  append(...elements) {
+    this.children.push(...elements);
+  }
+
+  replaceChildren(...elements) {
+    this.children = [...elements];
+  }
+
+  addEventListener(name, handler) {
+    const listeners = this.listeners.get(name) ?? [];
+    listeners.push(handler);
+    this.listeners.set(name, listeners);
+  }
+
+  remove() {
+    this.removed = true;
+  }
+
+  getBoundingClientRect() {
+    return { width: 640, height: 320 };
+  }
+}
+
+function withRouteMapDom(devicePixelRatio, callback) {
+  const previousGlobals = {
+    HTMLElement: globalThis.HTMLElement,
+    document: globalThis.document,
+    ResizeObserver: globalThis.ResizeObserver,
+    window: globalThis.window,
+  };
+  globalThis.HTMLElement = RouteMapMockElement;
+  globalThis.document = {
+    createElement: (tagName) => new RouteMapMockElement(tagName),
+    createElementNS: (_namespace, tagName) => new RouteMapMockElement(tagName),
+  };
+  globalThis.ResizeObserver = class {
+    observe() {}
+    disconnect() {}
+  };
+  globalThis.window = { devicePixelRatio, addEventListener() {}, removeEventListener() {} };
+
+  try {
+    return callback();
+  } finally {
+    for (const [name, value] of Object.entries(previousGlobals)) {
+      if (value === undefined) delete globalThis[name];
+      else globalThis[name] = value;
+    }
+  }
 }
 
 async function assertRouteQuoteProviderFailure(t, {
@@ -247,6 +317,31 @@ test("GET /api/rates reports the known schedule and leaves stop pricing unset", 
   );
   const pricedStopPayload = await pricedStopResponse.json();
   assert.equal(pricedStopPayload.rates.stopFeePerStop, 2.75);
+});
+
+test("route map requests @2x tiles for high-density displays without changing tile coverage", () => {
+  const route = {
+    type: "LineString",
+    coordinates: [[-84.512, 39.103], [-84.51, 39.08]],
+  };
+  const renderTiles = (devicePixelRatio) => withRouteMapDom(devicePixelRatio, () => {
+    const container = new RouteMapMockElement("div");
+    const map = createRouteMap(container);
+    map.setRoute(route);
+    const tiles = container.children[0].children[0].children;
+    return tiles.map((tile) => ({ src: tile.src, width: tile.style.width, height: tile.style.height }));
+  });
+
+  const standardTiles = renderTiles(1);
+  const retinaTiles = renderTiles(2);
+
+  assert.ok(standardTiles.length > 0);
+  assert.deepEqual(
+    retinaTiles.map(({ src, width, height }) => ({ src, width, height })),
+    standardTiles.map(({ src, width, height }) => ({ src: src.replace(/\.png$/, "@2x.png"), width, height })),
+  );
+  assert.ok(standardTiles.every(({ src, width, height }) => src.endsWith(".png") && !src.endsWith("@2x.png") && width === "256px" && height === "256px"));
+  assert.ok(retinaTiles.every(({ src, width, height }) => src.endsWith("@2x.png") && width === "256px" && height === "256px"));
 });
 
 test("API requests reject a mismatched origin before doing upstream work", async (t) => {
@@ -1012,6 +1107,46 @@ test("public address, route, and map endpoints enforce their IP limiters", async
     map: ["ip:203.0.113.8"],
   });
   assert.equal(upstreamCalls, 0);
+});
+
+test("map tile proxy forwards standard and validated @2x Geoapify tile URLs", async (t) => {
+  const upstreamPaths = [];
+  const rateLimitKeys = [];
+  installFetchMock(t, async (input) => {
+    const url = new URL(input);
+    assert.equal(url.origin, "https://maps.geoapify.com");
+    assert.equal(url.pathname.startsWith("/v1/tile/osm-bright/"), true);
+    assert.equal(url.searchParams.get("apiKey"), GEOAPIFY_API_KEY);
+    upstreamPaths.push(url.pathname);
+    return new Response(new Uint8Array([137, 80, 78, 71]), {
+      headers: { "content-type": "image/png" },
+    });
+  });
+  const env = makeEnv({
+    MAP_TILE_RATE_LIMITER: {
+      limit: async ({ key }) => {
+        rateLimitKeys.push(key);
+        return { success: true };
+      },
+    },
+  });
+
+  const standardResponse = await worker.fetch(apiRequest("/api/map/3/2/4.png"), env);
+  const retinaResponse = await worker.fetch(apiRequest("/api/map/3/2/4@2x.png"), env);
+  const unsupportedScaleResponse = await worker.fetch(apiRequest("/api/map/3/2/4@3x.png"), env);
+  const unsupportedScalePayload = await unsupportedScaleResponse.json();
+
+  assert.equal(standardResponse.status, 200);
+  assert.equal(standardResponse.headers.get("content-type"), "image/png");
+  assert.equal(retinaResponse.status, 200);
+  assert.equal(retinaResponse.headers.get("content-type"), "image/png");
+  assert.deepEqual(upstreamPaths, [
+    "/v1/tile/osm-bright/3/2/4.png",
+    "/v1/tile/osm-bright/3/2/4@2x.png",
+  ]);
+  assert.equal(unsupportedScaleResponse.status, 400);
+  assert.equal(unsupportedScalePayload.error.code, "invalid_tile");
+  assert.deepEqual(rateLimitKeys, ["ip:unknown", "ip:unknown", "ip:unknown"]);
 });
 
 test("route quotes reject canonical addresses outside Ohio, Kentucky, and Indiana", async (t) => {

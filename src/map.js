@@ -82,10 +82,10 @@ function makeAttribution() {
   return attribution;
 }
 
-function tilePath(zoom, x, y) {
+function tilePath(zoom, x, y, scaleSuffix) {
   const tileCount = 2 ** zoom;
   const wrappedX = ((x % tileCount) + tileCount) % tileCount;
-  return `/api/map/${zoom}/${wrappedX}/${y}.png`;
+  return `/api/map/${zoom}/${wrappedX}/${y}${scaleSuffix}.png`;
 }
 
 /**
@@ -219,6 +219,7 @@ export function createRouteMap(element) {
 
     tileLayer.replaceChildren();
     routeLayer.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    const tileScaleSuffix = window.devicePixelRatio >= 2 ? "@2x" : "";
 
     for (let tileX = firstTileX; tileX <= lastTileX; tileX += 1) {
       for (let tileY = firstTileY; tileY <= lastTileY; tileY += 1) {
@@ -228,7 +229,7 @@ export function createRouteMap(element) {
         image.setAttribute("aria-hidden", "true");
         image.loading = "lazy";
         image.decoding = "async";
-        image.src = tilePath(zoom, tileX, tileY);
+        image.src = tilePath(zoom, tileX, tileY, tileScaleSuffix);
         Object.assign(image.style, {
           position: "absolute",
           width: `${TILE_SIZE}px`,

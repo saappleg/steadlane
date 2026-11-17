@@ -1425,13 +1425,15 @@ async function proxyMapTile(request, env, match) {
   const zoom = Number(match[1]);
   const x = Number(match[2]);
   const y = Number(match[3]);
+  const scaleSuffix = match[4] || "";
+  if (scaleSuffix !== "" && scaleSuffix !== "@2x") fail(400, "invalid_tile", "The map tile is invalid.");
   if (!Number.isInteger(zoom) || zoom < 0 || zoom > 20) fail(400, "invalid_tile", "The map tile is invalid.");
   const tileCount = 2 ** zoom;
   if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x >= tileCount || y >= tileCount) {
     fail(400, "invalid_tile", "The map tile is invalid.");
   }
   const apiKey = requireGeoapifyKey(env);
-  const url = new URL(`https://maps.geoapify.com/v1/tile/osm-bright/${zoom}/${x}/${y}.png`);
+  const url = new URL(`https://maps.geoapify.com/v1/tile/osm-bright/${zoom}/${x}/${y}${scaleSuffix}.png`);
   url.searchParams.set("apiKey", apiKey);
   let upstream;
   try {
@@ -1478,7 +1480,7 @@ async function handleApiRequest(request, env) {
     return jsonResponse(ratePayload(env));
   }
 
-  const tileMatch = /^\/api\/map\/(\d{1,2})\/(\d{1,10})\/(\d{1,10})\.png$/.exec(path);
+  const tileMatch = /^\/api\/map\/(\d{1,2})\/(\d{1,10})\/(\d{1,10})(@[A-Za-z0-9]{1,8})?\.png$/.exec(path);
   if (tileMatch && request.method === "GET") {
     ensureSameOrigin(request);
     await enforceRateLimit(request, env, "MAP_TILE_RATE_LIMITER");
