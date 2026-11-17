@@ -303,15 +303,27 @@ function requireGeoapifyKey(env) {
   return env.GEOAPIFY_API_KEY;
 }
 
-async function fetchGeoapifyJson(url) {
+async function fetchGeoapifyJson(url, { operation = "address" } = {}) {
   let response;
   try {
     response = await fetch(url, { signal: AbortSignal.timeout(12_000), cache: "no-store" });
   } catch {
-    fail(502, "maps_unavailable", "The address or route service could not be reached.");
+    fail(502, "maps_network_error", "The address or route service could not be reached. Try again shortly.");
   }
   if (!response.ok) {
     if (response.status === 429) fail(503, "maps_busy", "The address or route service is busy. Try again shortly.");
+    if (response.status === 400) {
+      if (operation === "route") {
+        fail(422, "route_unavailable", "A drivable route could not be found between these addresses. Check the selected addresses and try again.");
+      }
+      fail(422, "maps_request_rejected", "The address request could not be completed. Check the address and try again.");
+    }
+    if (response.status === 401 || response.status === 403) {
+      fail(503, "maps_configuration_rejected", "Address and route estimates are unavailable right now. Try again later.");
+    }
+    if (response.status >= 500) {
+      fail(502, "maps_provider_unavailable", "The address or route service is temporarily unavailable. Try again shortly.");
+    }
     fail(502, "maps_unavailable", "The address or route service could not complete the request.");
   }
   try {
@@ -652,7 +664,7 @@ async function createRouteQuote(request, env) {
   routeUrl.searchParams.set("mode", "drive");
   if (stops.length) routeUrl.searchParams.set("intermediate_waypoint_mode", "stopover");
   routeUrl.searchParams.set("apiKey", apiKey);
-  const routePayload = await fetchGeoapifyJson(routeUrl);
+  const routePayload = await fetchGeoapifyJson(routeUrl, { operation: "route" });
   const routeFeature = Array.isArray(routePayload?.features) ? routePayload.features[0] : null;
   const distanceMeters = Number(routeFeature?.properties?.distance);
   const durationSeconds = Math.ceil(Number(routeFeature?.properties?.time));

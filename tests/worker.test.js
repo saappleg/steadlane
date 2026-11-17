@@ -57,6 +57,63 @@ function installFetchMock(t, handler) {
   });
 }
 
+async function assertRouteQuoteProviderFailure(t, {
+  expectedCode,
+  expectedMessage,
+  expectedStatus,
+  providerStatus,
+  fetchError,
+}) {
+  let detailCalls = 0;
+  let routeCalls = 0;
+  const providerDetails = "Sensitive provider detail: fake-test-address at fake-test-coordinates; test-only-geoapify-key";
+  installFetchMock(t, async (input) => {
+    const url = new URL(input);
+    if (url.origin === "https://api.geoapify.com" && url.pathname === "/v2/place-details") {
+      detailCalls += 1;
+      const pickup = url.searchParams.get("id") === "route-error-pickup-001";
+      return jsonResponse({
+        features: [{
+          properties: pickup
+            ? { feature_type: "details", place_id: "route-error-pickup-001", formatted: "Pickup, Cincinnati", lat: 39.1, lon: -84.5, country_code: "us", state_code: "OH" }
+            : { feature_type: "details", place_id: "route-error-destination-002", formatted: "Destination, Cincinnati", lat: 39.2, lon: -84.4, country_code: "us", state_code: "OH" },
+        }],
+      });
+    }
+    if (url.origin === "https://api.geoapify.com" && url.pathname === "/v1/routing") {
+      routeCalls += 1;
+      if (fetchError) throw fetchError;
+      return jsonResponse({
+        statusCode: providerStatus,
+        error: "Provider-only error",
+        message: providerDetails,
+      }, providerStatus);
+    }
+    assert.fail(`Unexpected request during route failure test: ${url.origin}${url.pathname}`);
+  });
+
+  const response = await worker.fetch(
+    apiRequest("/api/route-quote", {
+      method: "POST",
+      body: {
+        pickup: { placeId: "route-error-pickup-001" },
+        destination: { placeId: "route-error-destination-002" },
+        pickupAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        passengerCount: 1,
+      },
+    }),
+    makeEnv(),
+  );
+  const payload = await response.json();
+  const publicBody = JSON.stringify(payload);
+
+  assert.equal(detailCalls, 2);
+  assert.equal(routeCalls, 1);
+  assert.equal(response.status, expectedStatus);
+  assert.deepEqual(payload, { error: { code: expectedCode, message: expectedMessage } });
+  assert.doesNotMatch(publicBody, /test-only-geoapify-key|fake-test-address|fake-test-coordinates|Provider-only error|Sensitive provider detail/);
+}
+
 function signedStripeWebhookRequest(event) {
   const rawBody = JSON.stringify(event);
   const timestamp = Math.floor(Date.now() / 1000);
@@ -480,6 +537,108 @@ test("multi-stop route estimates preserve stops, flatten route legs, and remain 
   assert.equal(calls.length, 4);
 });
 
+test("route provider network and timeout failures return a safe retry message", async (t) => {
+  await t.test("network failure", async (subtest) => {
+    await assertRouteQuoteProviderFailure(subtest, {
+      expectedCode: "maps_network_error",
+      expectedMessage: "The address or route service could not be reached. Try again shortly.",
+      expectedStatus: 502,
+      fetchError: new TypeError("Network error for test-only-geoapify-key at fake-test-coordinates"),
+    });
+  });
+
+  await t.test("timeout", async (subtest) => {
+    const timeoutError = new Error("Timeout for fake-test-address using test-only-geoapify-key");
+    timeoutError.name = "TimeoutError";
+    await assertRouteQuoteProviderFailure(subtest, {
+      expectedCode: "maps_network_error",
+      expectedMessage: "The address or route service could not be reached. Try again shortly.",
+      expectedStatus: 502,
+      fetchError: timeoutError,
+    });
+  });
+});
+
+test("route provider status errors are classified without exposing provider details", async (t) => {
+  const cases = [
+    {
+      name: "400 unreachable route",
+      providerStatus: 400,
+      expectedCode: "route_unavailable",
+      expectedMessage: "A drivable route could not be found between these addresses. Check the selected addresses and try again.",
+      expectedStatus: 422,
+    },
+    {
+      name: "401 invalid configuration",
+      providerStatus: 401,
+      expectedCode: "maps_configuration_rejected",
+      expectedMessage: "Address and route estimates are unavailable right now. Try again later.",
+      expectedStatus: 503,
+    },
+    {
+      name: "403 rejected configuration",
+      providerStatus: 403,
+      expectedCode: "maps_configuration_rejected",
+      expectedMessage: "Address and route estimates are unavailable right now. Try again later.",
+      expectedStatus: 503,
+    },
+    {
+      name: "429 quota response",
+      providerStatus: 429,
+      expectedCode: "maps_busy",
+      expectedMessage: "The address or route service is busy. Try again shortly.",
+      expectedStatus: 503,
+    },
+    {
+      name: "500 provider failure",
+      providerStatus: 500,
+      expectedCode: "maps_provider_unavailable",
+      expectedMessage: "The address or route service is temporarily unavailable. Try again shortly.",
+      expectedStatus: 502,
+    },
+  ];
+
+  for (const failure of cases) {
+    await t.test(failure.name, async (subtest) => {
+      await assertRouteQuoteProviderFailure(subtest, failure);
+    });
+  }
+});
+
+test("address provider HTTP 400 returns a safe request-rejected response", async (t) => {
+  const providerDetails = "Sensitive provider detail: Sample Provider Address at fake-test-coordinates; test-only-geoapify-key";
+  let providerCalls = 0;
+  installFetchMock(t, async (input) => {
+    const url = new URL(input);
+    providerCalls += 1;
+    assert.equal(url.origin, "https://api.geoapify.com");
+    assert.equal(url.pathname, "/v1/geocode/search");
+    assert.equal(url.searchParams.get("text"), "Sample Provider Address");
+    return jsonResponse({
+      statusCode: 400,
+      error: "Provider-only error",
+      message: providerDetails,
+    }, 400);
+  });
+
+  const response = await worker.fetch(
+    apiRequest("/api/address?q=Sample%20Provider%20Address&mode=full"),
+    makeEnv({ SUPABASE_URL: "", SUPABASE_PUBLISHABLE_KEY: "", SUPABASE_SECRET_KEY: undefined }),
+  );
+  const payload = await response.json();
+  const publicBody = JSON.stringify(payload);
+
+  assert.equal(providerCalls, 1);
+  assert.equal(response.status, 422);
+  assert.deepEqual(payload, {
+    error: {
+      code: "maps_request_rejected",
+      message: "The address request could not be completed. Check the address and try again.",
+    },
+  });
+  assert.doesNotMatch(publicBody, /test-only-geoapify-key|fake-test-coordinates|Provider-only error|Sensitive provider detail/);
+});
+
 test("public address autocomplete filters to Ohio, Kentucky, and Indiana without Supabase config", async (t) => {
   const requests = [];
   installFetchMock(t, async (input, init = {}) => {
@@ -547,7 +706,7 @@ test("an empty autocomplete does not make a second provider request while the pa
   });
 
   const response = await worker.fetch(
-    apiRequest("/api/address?q=3214%20Goodwin%20Schoolhouse"),
+    apiRequest("/api/address?q=No%20Matching%20Test%20Address"),
     makeEnv({ SUPABASE_URL: "", SUPABASE_PUBLISHABLE_KEY: "", SUPABASE_SECRET_KEY: undefined }),
   );
   const payload = await response.json();
@@ -563,7 +722,7 @@ test("explicit full address search uses Geoapify geocoding and keeps the state f
     const url = new URL(input);
     requests.push(url);
     assert.equal(url.origin, "https://api.geoapify.com");
-    assert.equal(url.searchParams.get("text"), "3214 Goodwin Schoolhouse");
+    assert.equal(url.searchParams.get("text"), "Sample Test Address");
     assert.equal(url.pathname, "/v1/geocode/search");
     assert.equal(url.searchParams.get("filter"), "rect:-90,36,-80,42.2|countrycode:us");
     assert.equal(url.searchParams.get("format"), "geojson");
@@ -573,8 +732,8 @@ test("explicit full address search uses Geoapify geocoding and keeps the state f
       features: [
         {
           properties: {
-            place_id: "goodwin-schoolhouse-result-001",
-            formatted: "3214 Goodwin Schoolhouse Road, Ohio, United States",
+            place_id: "sample-test-address-result-001",
+            formatted: "Sample Test Address, Ohio, United States",
             lat: 39.1,
             lon: -84.5,
             country_code: "us",
@@ -584,7 +743,7 @@ test("explicit full address search uses Geoapify geocoding and keeps the state f
         {
           properties: {
             place_id: "outside-service-area-result-001",
-            formatted: "3214 Goodwin Schoolhouse Road, Pennsylvania, United States",
+            formatted: "Sample Test Address, Pennsylvania, United States",
             lat: 41.9,
             lon: -77.7,
             country_code: "us",
@@ -596,7 +755,7 @@ test("explicit full address search uses Geoapify geocoding and keeps the state f
   });
 
   const response = await worker.fetch(
-    apiRequest("/api/address?q=3214%20Goodwin%20Schoolhouse&mode=full"),
+    apiRequest("/api/address?q=Sample%20Test%20Address&mode=full"),
     makeEnv({ SUPABASE_URL: "", SUPABASE_PUBLISHABLE_KEY: "", SUPABASE_SECRET_KEY: undefined }),
   );
   const payload = await response.json();
@@ -604,8 +763,8 @@ test("explicit full address search uses Geoapify geocoding and keeps the state f
   assert.equal(response.status, 200);
   assert.deepEqual(payload.suggestions, [
     {
-      placeId: "goodwin-schoolhouse-result-001",
-      label: "3214 Goodwin Schoolhouse Road, Ohio, United States",
+      placeId: "sample-test-address-result-001",
+      label: "Sample Test Address, Ohio, United States",
       lat: 39.1,
       lon: -84.5,
     },

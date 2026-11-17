@@ -305,7 +305,7 @@ function showRoleView(profile, email) {
   driverView.hidden = true;
   signedInRole = "passenger";
   driverNavButton.hidden = true;
-  $(".local-nav").hidden = false;
+  $(".local-nav").hidden = true;
   passengerNavButtons.forEach((button) => {
     button.hidden = false;
   });

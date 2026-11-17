@@ -19,6 +19,9 @@
   --notice-ink: #57421e;
   --error: #9c2b25;
   --error-bg: #fff0ed;
+  --button-disabled-bg: #e3e9e5;
+  --button-disabled-border: #cbd5cf;
+  --button-disabled-ink: #43544d;
 }
 
 * {
@@ -332,10 +335,12 @@ a:focus-visible {
 }
 
 .button--disabled,
-.button--disabled:disabled {
-  border-color: #cbd5cf;
-  color: #43544d;
-  background: #e3e9e5;
+.button--disabled:disabled,
+.button:disabled,
+.button:disabled:hover {
+  border-color: var(--button-disabled-border);
+  color: var(--button-disabled-ink);
+  background: var(--button-disabled-bg);
   cursor: not-allowed;
 }
 
@@ -629,6 +634,9 @@ a:focus-visible {
     --notice-ink: #f5e6bc;
     --error: #ffb9b1;
     --error-bg: #412622;
+    --button-disabled-bg: #34423b;
+    --button-disabled-border: #53645a;
+    --button-disabled-ink: #c0ccc5;
   }
 
   body {
@@ -673,10 +681,12 @@ a:focus-visible {
   }
 
   .button--disabled,
-  .button--disabled:disabled {
-    border-color: #53645a;
-    color: #c0ccc5;
-    background: #34423b;
+  .button--disabled:disabled,
+  .button:disabled,
+  .button:disabled:hover {
+    border-color: var(--button-disabled-border);
+    color: var(--button-disabled-ink);
+    background: var(--button-disabled-bg);
   }
 
   .estimate-total {
