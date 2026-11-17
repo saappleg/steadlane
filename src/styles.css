@@ -1369,6 +1369,17 @@ a:focus-visible {
     background: #263831;
   }
 
+  .route-map__attribution a {
+    color: #23312f;
+    text-decoration: underline;
+    text-underline-offset: 0.12em;
+  }
+
+  .route-map__attribution a:hover,
+  .route-map__attribution a:focus-visible {
+    color: #123d38;
+  }
+
   .booking-state--success {
     border-left-color: var(--success);
     color: var(--success);
