@@ -53,6 +53,7 @@ const autocomplete = Object.fromEntries(addressKinds.map((kind) => [kind, {
   controller: null,
   suggestions: [],
   activeIndex: -1,
+  fullAddressResult: false,
   fullAddressAvailable: false,
   fullAddressSearching: false,
   searching: false,
@@ -393,6 +394,7 @@ function clearAutocomplete(kind) {
   state.controller = null;
   state.suggestions = [];
   state.activeIndex = -1;
+  state.fullAddressResult = false;
   state.fullAddressAvailable = false;
   state.fullAddressSearching = false;
   state.searching = false;
@@ -430,12 +432,13 @@ function setActiveSuggestion(kind, index) {
   });
 }
 
-function renderSuggestions(kind, suggestions) {
+function renderSuggestions(kind, suggestions, { fromFullAddress = false } = {}) {
   const input = addressInput(kind);
   const list = addressList(kind);
   const state = autocomplete[kind];
   state.suggestions = suggestions;
   state.activeIndex = -1;
+  state.fullAddressResult = fromFullAddress && suggestions.length > 0;
   state.fullAddressAvailable = false;
   list.replaceChildren();
 
@@ -453,7 +456,12 @@ function renderSuggestions(kind, suggestions) {
   input.setAttribute("aria-expanded", String(suggestions.length > 0));
   input.removeAttribute("aria-activedescendant");
   if (suggestions.length) {
-    setAddressStatus(kind, `${suggestions.length} address suggestions. Use the arrow keys to choose one.`);
+    setAddressStatus(
+      kind,
+      fromFullAddress
+        ? `${suggestions.length} full-address results. Use the arrow keys, Enter, or click to choose one.`
+        : `${suggestions.length} quick address suggestions. Use the arrow keys or click to choose one, or press Enter to search the full address.`,
+    );
   }
 }
 
@@ -562,6 +570,7 @@ async function searchFullAddress(kind, { force = false } = {}) {
   const requestSequence = state.requestSequence;
   state.controller?.abort();
   state.fullAddressAvailable = false;
+  state.fullAddressResult = false;
   state.fullAddressSearching = true;
   state.searching = false;
   input.setAttribute("aria-busy", "true");
@@ -589,7 +598,7 @@ async function searchFullAddress(kind, { force = false } = {}) {
           item.placeId.trim().length > 0,
         )
       : [];
-    renderSuggestions(kind, suggestions);
+    renderSuggestions(kind, suggestions, { fromFullAddress: true });
     if (!suggestions.length) {
       state.fullAddressAvailable = true;
       setAddressStatus(kind, "No matching addresses. Add the city, state, or ZIP code and press Enter to search again.");
@@ -618,7 +627,11 @@ function setupAutocomplete(kind) {
     if (event.key === "Enter") {
       event.preventDefault();
       if (state.suggestions.length) {
-        selectSuggestion(kind, state.activeIndex >= 0 ? state.activeIndex : 0);
+        if (state.activeIndex >= 0 || state.fullAddressResult) {
+          selectSuggestion(kind, state.activeIndex >= 0 ? state.activeIndex : 0);
+        } else {
+          void searchFullAddress(kind, { force: true });
+        }
         return;
       }
       if (state.fullAddressSearching) return;
