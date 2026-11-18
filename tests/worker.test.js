@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 import { createRouteMap } from "../src/map.js";
 import worker from "../src/worker.js";
 
@@ -342,6 +344,79 @@ test("route map requests @2x tiles for high-density displays without changing ti
   );
   assert.ok(standardTiles.every(({ src, width, height }) => src.endsWith(".png") && !src.endsWith("@2x.png") && width === "256px" && height === "256px"));
   assert.ok(retinaTiles.every(({ src, width, height }) => src.endsWith("@2x.png") && width === "256px" && height === "256px"));
+});
+
+test("service worker v6 precaches the map module, retires v5, and bypasses API caching", async () => {
+  const listeners = new Map();
+  const openedCacheNames = [];
+  const shellPaths = [];
+  const deletedCacheNames = [];
+  let cacheMatchCalls = 0;
+  const cache = {
+    addAll(paths) {
+      shellPaths.push(...Array.from(paths));
+      return Promise.resolve();
+    },
+    put() {
+      return Promise.resolve();
+    },
+  };
+  const cacheStorage = {
+    open(name) {
+      openedCacheNames.push(name);
+      return Promise.resolve(cache);
+    },
+    match() {
+      cacheMatchCalls += 1;
+      return Promise.resolve(null);
+    },
+    keys() {
+      return Promise.resolve(["steadlane-shell-v5", "unrelated-cache"]);
+    },
+    delete(name) {
+      deletedCacheNames.push(name);
+      return Promise.resolve(true);
+    },
+  };
+  const selfMock = {
+    location: { origin: APP_ORIGIN },
+    addEventListener(type, listener) {
+      listeners.set(type, listener);
+    },
+    skipWaiting() {
+      return Promise.resolve();
+    },
+    clients: {
+      claim() {
+        return Promise.resolve();
+      },
+    },
+  };
+  const source = await readFile(new URL("../service-worker.js", import.meta.url), "utf8");
+  runInNewContext(source, { self: selfMock, caches: cacheStorage, URL, Promise, fetch });
+
+  let installPromise;
+  listeners.get("install")({ waitUntil(promise) { installPromise = promise; } });
+  await installPromise;
+
+  assert.deepEqual(openedCacheNames, ["steadlane-shell-v6"]);
+  assert.ok(shellPaths.includes("/src/map.js"));
+  assert.ok(shellPaths.includes("/src/app.js?v=5"));
+
+  let activatePromise;
+  listeners.get("activate")({ waitUntil(promise) { activatePromise = promise; } });
+  await activatePromise;
+  assert.deepEqual(deletedCacheNames, ["steadlane-shell-v5"]);
+
+  let respondWithCalls = 0;
+  for (const path of ["/api/config", "/api/map/3/2/4@2x.png"]) {
+    listeners.get("fetch")({
+      request: new Request(`${APP_ORIGIN}${path}`),
+      respondWith() { respondWithCalls += 1; },
+    });
+  }
+  assert.equal(respondWithCalls, 0);
+  assert.equal(cacheMatchCalls, 0);
 });
 
 test("API requests reject a mismatched origin before doing upstream work", async (t) => {
