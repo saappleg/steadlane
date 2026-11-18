@@ -1,0 +1,12 @@
+# Local account credentials and development settings
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+
+# Local tooling state
+.wrangler/
+.supabase/
+node_modules/

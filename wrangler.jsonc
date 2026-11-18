@@ -1,9 +1,56 @@
 {
   "name": "steadlane",
+  "main": "src/worker.js",
   "compatibility_date": "2026-11-14",
   "workers_dev": true,
+  "vars": {
+    "SUPABASE_URL": "https://YOUR_PROJECT_REF.supabase.co",
+    "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_REPLACE_ME"
+  },
+  "ratelimits": [
+    {
+      "name": "ADDRESS_RATE_LIMITER",
+      "namespace_id": "84001901",
+      "simple": { "limit": 30, "period": 60 }
+    },
+    {
+      "name": "ROUTE_RATE_LIMITER",
+      "namespace_id": "84001902",
+      "simple": { "limit": 8, "period": 60 }
+    },
+    {
+      "name": "MAP_TILE_RATE_LIMITER",
+      "namespace_id": "84001903",
+      "simple": { "limit": 120, "period": 60 }
+    }
+  ],
+  "previews": {
+    "vars": {
+      "SUPABASE_URL": "https://cfypnovyfipeqpfktuxc.supabase.co",
+      "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_-f35M2RMXLbacJ3EPp6-fg_6LXaZUgZ"
+    },
+    "ratelimits": [
+      {
+        "name": "ADDRESS_RATE_LIMITER",
+        "namespace_id": "84002901",
+        "simple": { "limit": 30, "period": 60 }
+      },
+      {
+        "name": "ROUTE_RATE_LIMITER",
+        "namespace_id": "84002902",
+        "simple": { "limit": 8, "period": 60 }
+      },
+      {
+        "name": "MAP_TILE_RATE_LIMITER",
+        "namespace_id": "84002903",
+        "simple": { "limit": 120, "period": 60 }
+      }
+    ]
+  },
   "assets": {
     "directory": "./",
-    "not_found_handling": "404-page"
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"],
+    "not_found_handling": "none"
   }
 }
